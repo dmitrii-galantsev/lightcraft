@@ -368,15 +368,62 @@ pub fn chroma_noise(src: &Rgb32f) -> f32 {
     vars[(vars.len() - 1) * 20 / 100]
 }
 
-/// Noise-reduction parameters at an output long edge of `out_long` px (see [`denoise`]). `noise` is
-/// [`chroma_noise`] of the source.
-pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize, noise: f32) -> (Option<NrLum>, Option<NrColor>) {
+/// A robust flat-area level of the luminance noise: the 20th percentile of the local log-luminance
+/// variance over the source (EV²), measured like [`chroma_noise`]. The luminance noise reduction
+/// sizes its filter from it, so a low-ISO file keeps its detail and a dark high-ISO one is calmed.
+pub fn luma_noise(src: &Rgb32f) -> f32 {
+    let (w, h) = (src.width, src.height);
+    if w < 8 || h < 8 {
+        return 0.0;
+    }
+    let step = ((w.min(h) / 256).max(1) * 2).max(1);
+    let mut vars: Vec<f32> = Vec::new();
+    let mut y = 2;
+    while y + 2 < h {
+        let mut x = 2;
+        while x + 2 < w {
+            let (mut s, mut sq) = (0.0f32, 0.0f32);
+            for dy in 0..5 {
+                for dx in 0..5 {
+                    let v = log_lum(src.data[(y + dy - 2) * w + (x + dx - 2)]);
+                    s += v;
+                    sq += v * v;
+                }
+            }
+            let m = s / 25.0;
+            vars.push((sq / 25.0 - m * m).max(0.0));
+            x += step;
+        }
+        y += step;
+    }
+    if vars.len() < 16 {
+        return 0.0;
+    }
+    vars.sort_by(f32::total_cmp);
+    vars[(vars.len() - 1) * 20 / 100]
+}
+
+/// Luminance smoothing strength relative to the measured luminance-noise variance: `eps =
+/// STRENGTH·var`. The variance is a low quantile of the local log-luminance variance (the
+/// flat-area noise level), so the same slider calms a high-ISO frame and leaves a low-ISO one.
+pub const LNR_NOISE_STRENGTH: f32 = 0.85;
+
+/// Noise-reduction parameters at an output long edge of `out_long` px (see [`denoise`]).
+/// `chroma` and `luma` are [`chroma_noise`] and [`luma_noise`] of the source.
+pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize, chroma: f32, luma: f32) -> (Option<NrLum>, Option<NrColor>) {
     let lum = (s.detail.nr_luminance / 100.0) as f32;
     let col = (s.detail.nr_color / 100.0) as f32;
     let scale = (out_long as f32 / src_long.max(1) as f32).clamp(0.05, 1.0);
     let l = (lum > 0.0).then(|| {
         let detail = (s.detail.nr_detail / 100.0) as f32;
-        NrLum { sigma: (1.0 + 2.5 * lum) * scale.max(0.4), eps: 0.002 + lum * lum * 0.25 * (1.0 - 0.7 * detail), k: lum.sqrt() }
+        // eps follows the luminance noise measured in the photo's flat areas, like the colour NR:
+        // a low-ISO file keeps its detail and a dark high-ISO one is actually calmed. Detail keeps
+        // fine luminance back by lowering eps; the slider sets the radius and how much of the
+        // smoothed luminance is written back. The radius starts at ~2 px so that even a low
+        // Luminance setting reaches the coarse luminance grain, not just fine speckle.
+        let n2 = (luma * scale * scale).max(1e-12);
+        let eps = LNR_NOISE_STRENGTH * (1.5 - detail) * n2;
+        NrLum { sigma: (2.0 + 4.0 * lum) * scale.max(0.4), eps, k: lum.sqrt() }
     });
     let c = (col > 0.0).then(|| {
         let smooth = (s.detail.nr_color_smoothness / 100.0) as f32;
@@ -388,7 +435,7 @@ pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize, noise: f
         // lowering eps. The Color slider sets the radius and how much of the smoothed chroma is
         // written back — not eps — so raising it smooths further without bleeding more across a
         // colour edge. Two passes at one radius reach a low residual.
-        let n2 = (noise * scale * scale).max(1e-12);
+        let n2 = (chroma * scale * scale).max(1e-12);
         let eps = CNR_NOISE_STRENGTH * (1.5 - detail) * n2;
         let t = (col / 0.25).clamp(0.0, 1.0);
         NrColor { sigma, passes: CNR_PASSES, eps, t }
@@ -400,8 +447,8 @@ pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize, noise: f
 /// log-luminance, colour by edge-aware smoothing the square-root R/B colour differences from green
 /// (green and the pixel's luminance are untouched). Radii scale with how much the source was
 /// downsampled (preview noise is already averaged out).
-pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, src_long: usize, out_long: usize, noise: f32) {
-    let (lum, col) = nr_params(s, src_long, out_long, noise);
+pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, src_long: usize, out_long: usize, chroma: f32, luma: f32) {
+    let (lum, col) = nr_params(s, src_long, out_long, chroma, luma);
     let w = img.width;
     if let Some(nr) = lum {
         let _t = crate::profiling().then(std::time::Instant::now);
@@ -728,9 +775,71 @@ mod nr_tests {
         let (v0, m0) = var(&img);
         let mut s = DevelopSettings::default();
         s.detail.nr_luminance = 80.0;
-        denoise(&mut img, &s, 64, 64, 0.0);
+        let n = luma_noise(&img);
+        denoise(&mut img, &s, 64, 64, 0.0, n);
         let (v1, m1) = var(&img);
         assert!(v1 < v0 * 0.5, "{v0} -> {v1}");
         assert!((m1 - m0).abs() < 0.01);
+    }
+
+    /// A uniform grey carrying per-pixel speckle of relative amplitude `amp` around 0.2.
+    fn grey_speckle(amp: f32) -> Rgb32f {
+        Rgb32f::from_fn(96, 96, |x, y| {
+            let n = (((x * 7919 + y * 104729) % 97) as f32 / 97.0 - 0.5) * 2.0 * amp;
+            [0.2 * (1.0 + n); 3]
+        })
+    }
+
+    fn grey_var(im: &Rgb32f) -> f32 {
+        let m = im.data.iter().map(|p| p[1]).sum::<f32>() / im.len() as f32;
+        im.data.iter().map(|p| (p[1] - m).powi(2)).sum::<f32>() / im.len() as f32
+    }
+
+    #[test]
+    fn luma_noise_tracks_the_noise_level() {
+        // The measured noise the luminance NR sizes itself from must follow the speckle: this is
+        // what lets one slider calm a high-ISO frame and leave a low-ISO one nearly alone.
+        let lo = luma_noise(&grey_speckle(0.02));
+        let hi = luma_noise(&grey_speckle(0.16));
+        assert!(hi > 20.0 * lo, "luma noise {lo} -> {hi}");
+    }
+
+    #[test]
+    fn luminance_nr_at_the_lightroom_setting_is_not_a_no_op() {
+        // The Lightroom reference frame renders with Luminance 14; a fixed eps left the coarse
+        // luminance grain, so the low setting has to reduce the measured noise materially.
+        let mut img = grey_speckle(0.3);
+        let v0 = grey_var(&img);
+        let mut s = DevelopSettings::default();
+        s.detail.nr_luminance = 14.0;
+        let n = luma_noise(&img);
+        denoise(&mut img, &s, 96, 96, 0.0, n);
+        let v1 = grey_var(&img);
+        assert!(v1 < 0.8 * v0, "{v0} -> {v1}");
+    }
+
+    #[test]
+    fn luminance_nr_keeps_a_bright_dark_edge() {
+        let mut img = Rgb32f::from_fn(120, 64, |x, y| {
+            let base = if x < 60 { 0.10 } else { 0.50 };
+            let n = (((x * 7919 + y * 104729) % 97) as f32 / 97.0 - 0.5) * 0.03;
+            [base + n; 3]
+        });
+        let mut s = DevelopSettings::default();
+        s.detail.nr_luminance = 14.0;
+        let n = luma_noise(&img);
+        denoise(&mut img, &s, 120, 64, 0.0, n);
+        let mean = |img: &Rgb32f, x0: usize, x1: usize| {
+            let (mut s, mut n) = (0.0f32, 0.0f32);
+            for y in 0..img.height {
+                for x in x0..x1 {
+                    s += img.get(x, y)[1];
+                    n += 1.0;
+                }
+            }
+            s / n
+        };
+        let (dark, bright) = (mean(&img, 46, 56), mean(&img, 64, 74));
+        assert!(bright - dark > 0.38, "{dark} -> {bright}");
     }
 }

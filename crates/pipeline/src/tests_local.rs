@@ -112,6 +112,30 @@ fn colour_nr_removes_chroma_noise_without_raising_green() {
 }
 
 #[test]
+fn luminance_nr_calms_luma_noise_and_keeps_a_bright_dark_edge() {
+    // A grey field with luminance speckle and a bright|dark step: Noise Reduction calms the
+    // flat-area luminance noise without softening the step (the self-guided filter's eps follows
+    // the measured noise, so an edge of several EV survives).
+    let src = Rgb32f::from_fn(W, H, |x, y| {
+        let base = if x < W / 2 { 0.14 } else { 0.30 };
+        let n = 0.25 * noise(x, y, 11);
+        [base * (1.0 + n); 3]
+    });
+    let mut s = DevelopSettings::default();
+    s.detail.nr_luminance = 14.0;
+    s.detail.nr_color = 0.0;
+    let plain = shot(&src, &DevelopSettings::default());
+    let on = shot(&src, &s);
+    let (n0, n1) = (spread(&plain, 10, 90, luma), spread(&on, 10, 90, luma));
+    assert!(n1 < 0.85 * n0, "luma noise {n0} -> {n1}");
+    let side = |img: &Rgba8, x0: usize, x1: usize| {
+        (4..H - 4).flat_map(|y| (x0..x1).map(move |x| luma(img.data[y * W + x]))).sum::<f32>() / ((x1 - x0) * (H - 8)) as f32
+    };
+    let (dl, dr) = (side(&on, 20, 70), side(&on, 170, 220));
+    assert!(dr - dl > 15.0, "{dl} vs {dr}");
+}
+
+#[test]
 fn colour_nr_at_high_values_does_not_bleed_across_a_colour_edge() {
     // red | grey step at x = 140, both sides carrying chroma speckle (so the filter is actually
     // smoothing): raising Color must not push red into the grey side — issue #815's "fringes at

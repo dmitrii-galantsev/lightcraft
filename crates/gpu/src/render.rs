@@ -796,7 +796,7 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
 fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let n = w * h;
-    let (lum, col) = local::nr_params(&plan.settings, plan.src_long, plan.frame.output_long(w, h), plan.chroma_noise);
+    let (lum, col) = local::nr_params(&plan.settings, plan.src_long, plan.frame.output_long(w, h), plan.chroma_noise, plan.luma_noise);
     let mut img = img;
     if let Some(nr) = lum {
         let l = cx.gpu.buffer(n);
