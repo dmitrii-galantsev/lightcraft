@@ -5,6 +5,8 @@ plan/
 /dist
 /corpus
 /log
+# local evidence exports (real photos; never committed)
+/probe
 .DS_Store
 .claude/
 /craft-fonts

@@ -408,6 +408,34 @@ fn gpu_matches_cpu() {
     eprintln!("worst: mean {:.4} LSB, max {} LSB", worst.0, worst.1);
 }
 
+/// Issue #815: the colour noise reduction is edge-aware and noise-adaptive; this exercises the
+/// guided chroma path (its square-root basis and measured `eps`) on both renderers with real
+/// chroma speckle, where the plain scenes above have little.
+#[test]
+fn colour_nr_on_a_noisy_scene_matches() {
+    if !gpu() {
+        return;
+    }
+    let base = scene(1, 640, 480);
+    let src = Arc::new(Rgb32f::from_fn(640, 480, |x, y| {
+        let n = (((x * 7919 + y * 104729) % 251) as f32 / 251.0 - 0.5) * 0.12;
+        let c = base.get(x, y);
+        [c[0] * (1.0 + n), c[1], c[2] * (1.0 - n)]
+    }));
+    let raw = SourceInfo { raw: true, ..Default::default() };
+    let req = RenderRequest::fit(640, 480);
+    for col in [25.0, 60.0, 100.0] {
+        let mut s = DevelopSettings::default();
+        s.detail.nr_color = col;
+        check(&format!("chroma nr {col}"), &src, &raw, &s, &req);
+    }
+    let mut s = DevelopSettings::default();
+    s.detail.nr_color = 50.0;
+    s.detail.nr_color_smoothness = 100.0;
+    s.detail.nr_color_detail = 0.0;
+    check("chroma nr smooth/detail", &src, &raw, &s, &req);
+}
+
 /// Issue #523: a raw's clipped highlights rebuilt as the raw decode does it (fully clipped ones to the neutral of
 /// the colour model applied after them, here a look whose rows don't sum to one) stay neutral when darkened, on
 /// the GPU as on the CPU, and the two renders agree.

@@ -6,7 +6,7 @@
 
 use lightcraft_codecs::{ChromaSubsampling, EncodeImage, EncodeMeta, JxlColour, JxlOptions, NamedSpace, Samples, encode, icc};
 pub use lightcraft_codecs::{JxlEffort, TiffCompression};
-use lightcraft_meta::{DateTime, Gps, Metadata};
+use lightcraft_meta::{DateTime, Flash, Gps, Metadata};
 pub use lightcraft_pipeline::{DeepImage, DeepSamples, OutputDepth, OutputSpace};
 use lightcraft_raster::Rgba8;
 use serde::{Deserialize, Serialize};
@@ -1509,9 +1509,19 @@ pub fn export_metadata(photo: &lightcraft_catalog::Photo, catalog: &lightcraft_c
         out.gps = m.gps.map(|(latitude, longitude)| Gps { latitude, longitude, altitude: None });
     }
     if o.metadata == MetadataPolicy::All {
-        out.model = text(&m.camera);
+        // Exif Make and Model separately (camera is their join); older catalogs only have `camera`.
+        out.make = text(&m.make);
+        out.model = text(&m.model).or_else(|| text(&m.camera));
+        out.lens_make = text(&m.lens_make);
         out.lens_model = text(&m.lens);
+        out.lens_spec = m.lens_spec.map(|s| s.map(f64::from));
+        out.serial_number = text(&m.serial_number);
+        out.exposure_program = m.exposure_program;
+        out.metering_mode = m.metering_mode;
+        out.white_balance = m.white_balance;
+        out.flash = m.flash.map(|raw| Flash { fired: raw & 1 != 0, raw });
         out.focal_length = m.focal_mm.map(f64::from);
+        out.focal_length_35mm = m.focal_length_35mm.map(f64::from);
         out.f_number = m.aperture.map(f64::from);
         out.exposure_time = lightcraft_catalog::parse_shutter_seconds(&m.shutter);
         out.iso = m.iso;
@@ -2243,6 +2253,17 @@ mod tests {
         use lightcraft_catalog::{Catalog, Photo, PhotoId, Source};
         let mut p = Photo::new(PhotoId(1), Source::Demo { scene: 0 }, "a.jpg", "jpeg", 10, 10, "2026-09-30T00:00:00");
         p.meta.camera = "Synthetic X2".into();
+        p.meta.make = "Synthetic".into();
+        p.meta.model = "X2".into();
+        p.meta.lens = "35mm F2".into();
+        p.meta.lens_make = "LensCo".into();
+        p.meta.lens_spec = Some([35.0, 35.0, 2.0, 2.0]);
+        p.meta.serial_number = "12345".into();
+        p.meta.exposure_program = Some(1);
+        p.meta.metering_mode = Some(5);
+        p.meta.white_balance = Some(0);
+        p.meta.flash = Some(16);
+        p.meta.focal_length_35mm = Some(52.0);
         p.meta.copyright = "(c) Me".into();
         p.meta.copyright_status = lightcraft_catalog::CopyrightStatus::Copyrighted;
         p.meta.usage_terms = "Editorial use only".into();
@@ -2250,7 +2271,10 @@ mod tests {
         p.meta.shutter = "1/250".into();
         p.meta.gps = Some((43.0, -110.0));
         let all = export_metadata(&p, &Catalog::new(), &ExportOptions::default()).unwrap();
-        assert_eq!(all.model.as_deref(), Some("Synthetic X2"));
+        assert_eq!((all.make.as_deref(), all.model.as_deref()), (Some("Synthetic"), Some("X2")));
+        assert_eq!(all.lens_spec, Some([35.0, 35.0, 2.0, 2.0]));
+        assert_eq!((all.serial_number.as_deref(), all.exposure_program, all.metering_mode), (Some("12345"), Some(1), Some(5)));
+        assert_eq!(all.flash.map(|f| f.raw), Some(16));
         assert!((all.exposure_time.unwrap() - 0.004).abs() < 1e-9);
         assert!(all.gps.is_some());
         let o = ExportOptions { metadata: MetadataPolicy::AllExceptCamera, remove_location: true, ..Default::default() };
@@ -2267,7 +2291,9 @@ mod tests {
         // embedded and readable back from the JPEG
         let jpg = encode_with_metadata(&test_image(), &ExportOptions::default(), Some(&all)).unwrap();
         let back = lightcraft_meta::extract(&jpg);
-        assert_eq!(back.model.as_deref(), Some("Synthetic X2"));
+        assert_eq!((back.make.as_deref(), back.model.as_deref()), (Some("Synthetic"), Some("X2")));
+        assert_eq!(back.lens_spec, Some([35.0, 35.0, 2.0, 2.0]));
+        assert_eq!(back.serial_number.as_deref(), Some("12345"));
         assert_eq!(back.copyright.as_deref(), Some("(c) Me"));
         assert_eq!((back.copyright_marked, back.usage_terms.as_deref()), (Some(true), Some("Editorial use only")));
         assert_eq!(back.copyright_url.as_deref(), Some("https://example.com/rights"));

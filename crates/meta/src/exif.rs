@@ -8,6 +8,9 @@ pub fn strip_exif_header(b: &[u8]) -> &[u8] {
     if b.len() >= 6 && &b[..4] == b"Exif" && b[4] == 0 { &b[6..] } else { b }
 }
 
+/// Exif `ColorSpace` value for sRGB (1; 0xffff is uncalibrated, the Adobe RGB value 2 is not Exif).
+const COLOR_SPACE_SRGB: u16 = 1;
+
 /// Read metadata from a TIFF-structured Exif block (a whole TIFF/DNG/raw file, or the payload of a JPEG APP1
 /// Exif segment with or without the `Exif\0\0` prefix). Malformed input yields whatever could be read.
 pub fn read_exif(bytes: &[u8]) -> Metadata {
@@ -279,14 +282,28 @@ pub fn write_exif(meta: &Metadata) -> Vec<u8> {
     let mut ex = IfdBuilder::new();
     ex.set(t::EXIF_VERSION, Value::Undefined(b"0232".to_vec()));
     let r = |v: Option<f64>| v.filter(|v| v.is_finite() && *v > 0.0).map(|v| Value::Rational(vec![rational(v)]));
+    let short = |v: Option<u16>| v.map(|x| Value::Short(vec![x]));
+    let lens_spec = meta.lens_spec.filter(|s| s[0] > 0.0).map(|s| Value::Rational(s.iter().map(|&v| rational(v)).collect()));
+    let focal_35mm =
+        meta.focal_length_35mm.filter(|v| v.is_finite() && *v > 0.0).map(|v| Value::Short(vec![v.round().clamp(0.0, f64::from(u16::MAX)) as u16]));
     for (tag, v) in [
         (t::DATE_TIME_ORIGINAL, meta.capture_time.map(|d| Value::Ascii(d.to_exif()))),
+        (t::DATE_TIME_DIGITIZED, meta.capture_time.map(|d| Value::Ascii(d.to_exif()))),
         (t::EXPOSURE_TIME, r(meta.exposure_time)),
         (t::F_NUMBER, r(meta.f_number)),
         (t::FOCAL_LENGTH, r(meta.focal_length)),
+        (t::FOCAL_LENGTH_35MM, focal_35mm),
         (t::ISO_SPEED, meta.iso.map(|i| Value::Short(vec![i.min(65_535) as u16]))),
+        (t::EXPOSURE_PROGRAM, short(meta.exposure_program)),
+        (t::METERING_MODE, short(meta.metering_mode)),
+        (t::FLASH, short(meta.flash.map(|f| f.raw))),
+        (t::WHITE_BALANCE, short(meta.white_balance)),
+        (t::COLOR_SPACE, Some(Value::Short(vec![COLOR_SPACE_SRGB]))),
+        (t::BODY_SERIAL_NUMBER, ascii(&meta.serial_number)),
         (t::LENS_MAKE, ascii(&meta.lens_make)),
         (t::LENS_MODEL, ascii(&meta.lens_model)),
+        (t::LENS_SPECIFICATION, lens_spec),
+        (t::LENS_SERIAL_NUMBER, ascii(&meta.lens_serial_number)),
         (t::EXPOSURE_BIAS, meta.exposure_bias.map(|v| Value::SRational(vec![srational(v)]))),
     ] {
         if let Some(v) = v {
@@ -349,5 +366,37 @@ mod write_tests {
         assert_eq!(back.lens_model, m.lens_model);
         let g = back.gps.unwrap();
         assert!((g.latitude - 43.7904).abs() < 1e-5 && (g.longitude + 110.6818).abs() < 1e-5, "{g:?}");
+    }
+
+    #[test]
+    fn capture_and_lens_tags_round_trip() {
+        let m = Metadata {
+            make: Some("SONY".into()),
+            model: Some("ILCE-7M4".into()),
+            lens_make: Some("Tamron".into()),
+            lens_model: Some("E 35-150mm F2.0-F2.8 A058".into()),
+            lens_spec: Some([35.0, 150.0, 2.0, 2.8]),
+            lens_serial_number: Some("L1".into()),
+            serial_number: Some("06205619".into()),
+            capture_time: DateTime::parse_iso("2026-05-16T16:32:43"),
+            exposure_program: Some(1),
+            metering_mode: Some(5),
+            white_balance: Some(0),
+            flash: Some(Flash { fired: false, raw: 16 }),
+            focal_length_35mm: Some(92.0),
+            ..Default::default()
+        };
+        let back = read_exif(&write_exif(&m));
+        assert_eq!(back.make.as_deref(), Some("SONY"));
+        assert_eq!(back.model.as_deref(), Some("ILCE-7M4"));
+        assert_eq!(back.lens_make.as_deref(), Some("Tamron"));
+        assert_eq!(back.lens_spec, Some([35.0, 150.0, 2.0, 2.8]));
+        assert_eq!(back.lens_serial_number.as_deref(), Some("L1"));
+        assert_eq!(back.serial_number.as_deref(), Some("06205619"));
+        assert_eq!(back.exposure_program, Some(1));
+        assert_eq!(back.metering_mode, Some(5));
+        assert_eq!(back.white_balance, Some(0));
+        assert_eq!(back.flash.map(|f| f.raw), Some(16));
+        assert_eq!(back.focal_length_35mm, Some(92.0));
     }
 }

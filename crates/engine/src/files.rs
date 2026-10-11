@@ -18,7 +18,17 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
     let camera = [m.make.clone().unwrap_or_default(), m.model.clone().unwrap_or_default()].join(" ").trim().to_string();
     let meta = Meta {
         camera,
+        make: m.make.clone().unwrap_or_default(),
+        model: m.model.clone().unwrap_or_default(),
         lens: m.lens_model.clone().unwrap_or_default(),
+        lens_make: m.lens_make.clone().unwrap_or_default(),
+        lens_spec: m.lens_spec.map(|s| s.map(|v| v as f32)),
+        serial_number: m.serial_number.clone().unwrap_or_default(),
+        exposure_program: m.exposure_program,
+        metering_mode: m.metering_mode,
+        white_balance: m.white_balance,
+        flash: m.flash.map(|f| f.raw),
+        focal_length_35mm: m.focal_length_35mm.map(|v| v as f32),
         focal_mm: m.focal_length.map(|f| f as f32),
         aperture: m.f_number.map(|f| f as f32),
         shutter,

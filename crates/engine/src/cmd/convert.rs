@@ -224,9 +224,27 @@ fn fill_missing_meta(id: lightcraft_catalog::PhotoId, ph: &lightcraft_catalog::P
     if m.camera.is_empty() {
         m.camera = src.camera.clone();
     }
+    if m.make.is_empty() {
+        m.make = src.make.clone();
+    }
+    if m.model.is_empty() {
+        m.model = src.model.clone();
+    }
     if m.lens.is_empty() {
         m.lens = src.lens.clone();
     }
+    if m.lens_make.is_empty() {
+        m.lens_make = src.lens_make.clone();
+    }
+    if m.serial_number.is_empty() {
+        m.serial_number = src.serial_number.clone();
+    }
+    m.lens_spec = m.lens_spec.or(src.lens_spec);
+    m.exposure_program = m.exposure_program.or(src.exposure_program);
+    m.metering_mode = m.metering_mode.or(src.metering_mode);
+    m.white_balance = m.white_balance.or(src.white_balance);
+    m.flash = m.flash.or(src.flash);
+    m.focal_length_35mm = m.focal_length_35mm.or(src.focal_length_35mm);
     if m.shutter.is_empty() {
         m.shutter = src.shutter.clone();
     }

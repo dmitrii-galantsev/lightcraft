@@ -316,7 +316,9 @@ fn a_photo_is_denoised_in_the_background_and_the_amount_mixes_it_in() {
     // switching the Detail section off switches the denoise off with it
     set_amount(&mut x.s, 100.0);
     x.s.execute("develop.sectionEnabled", &json!({"section": "detail", "enabled": false})).unwrap();
-    assert!((rendered_mean(&mut x.s, id) - plain).abs() < 0.01);
+    let off = rendered_mean(&mut x.s, id);
+    set_amount(&mut x.s, 0.0);
+    assert!((rendered_mean(&mut x.s, id) - off).abs() < 1e-9, "Detail off ignores the denoise amount");
     assert_eq!(x.s.media.denoise_salt(id, &x.s.catalog.photo(id).unwrap().develop), 0);
     let _ = std::fs::remove_dir_all(&x.dir);
 }

@@ -299,15 +299,78 @@ pub struct NrLum {
     pub k: f32,
 }
 
-/// Colour noise reduction: chromaticity blurred by `sigma` px, mixed in by `t`.
+/// Colour noise reduction: the R/B colour differences from green (in square-root chroma) are
+/// edge-aware smoothed by `passes` self-guided passes of `sigma` px at `eps` and blended back by
+/// `t`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NrColor {
     pub sigma: f32,
+    pub passes: usize,
+    pub eps: f32,
     pub t: f32,
 }
 
-/// Noise-reduction parameters at an output long edge of `out_long` px (see [`denoise`]).
-pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize) -> (Option<NrLum>, Option<NrColor>) {
+/// Offset of the square roots in the chroma basis; keeps the derivative finite near black.
+pub const CHROMA_OFF: f32 = 0.003;
+
+/// Chroma smoothing strength relative to the measured chroma-noise variance: `eps = STRENGTH·var`.
+/// The variance is a low quantile of the local chroma variance, i.e. the flat-area noise level.
+pub const CNR_NOISE_STRENGTH: f32 = 2.0;
+
+/// Self-guided passes per render. Two passes at one radius reach a low residual with less edge
+/// bleed than one pass at a wider radius (which would need a larger `eps` to smooth as much).
+pub const CNR_PASSES: usize = 2;
+
+/// The R/B colour differences from green in square-root chroma (the basis the colour noise filter
+/// works on): the noise is about the same size at every brightness and nothing blows up near black.
+#[inline]
+pub fn chroma_sqrt(c: [f32; 3]) -> [f32; 2] {
+    let g = (c[1] + CHROMA_OFF).max(0.0).sqrt();
+    [(c[0] + CHROMA_OFF).max(0.0).sqrt() - g, (c[2] + CHROMA_OFF).max(0.0).sqrt() - g]
+}
+
+/// A robust flat-area level of the chroma noise: the 20th percentile of the local (square-root
+/// chroma) variance over the source. The colour noise reduction sizes its filter from it, and the
+/// CPU and GPU renderers share the value (both start from the same source).
+pub fn chroma_noise(src: &Rgb32f) -> f32 {
+    let (w, h) = (src.width, src.height);
+    if w < 8 || h < 8 {
+        return 0.0;
+    }
+    let step = ((w.min(h) / 256).max(1) * 2).max(1);
+    let mut vars: Vec<f32> = Vec::new();
+    let mut y = 2;
+    while y + 2 < h {
+        let mut x = 2;
+        while x + 2 < w {
+            let (mut s, mut sq) = ([0.0f32; 2], [0.0f32; 2]);
+            for dy in 0..5 {
+                for dx in 0..5 {
+                    let d = chroma_sqrt(src.data[(y + dy - 2) * w + (x + dx - 2)]);
+                    for k in 0..2 {
+                        s[k] += d[k];
+                        sq[k] += d[k] * d[k];
+                    }
+                }
+            }
+            for k in 0..2 {
+                let m = s[k] / 25.0;
+                vars.push((sq[k] / 25.0 - m * m).max(0.0));
+            }
+            x += step;
+        }
+        y += step;
+    }
+    if vars.len() < 16 {
+        return 0.0;
+    }
+    vars.sort_by(f32::total_cmp);
+    vars[(vars.len() - 1) * 20 / 100]
+}
+
+/// Noise-reduction parameters at an output long edge of `out_long` px (see [`denoise`]). `noise` is
+/// [`chroma_noise`] of the source.
+pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize, noise: f32) -> (Option<NrLum>, Option<NrColor>) {
     let lum = (s.detail.nr_luminance / 100.0) as f32;
     let col = (s.detail.nr_color / 100.0) as f32;
     let scale = (out_long as f32 / src_long.max(1) as f32).clamp(0.05, 1.0);
@@ -316,18 +379,29 @@ pub fn nr_params(s: &DevelopSettings, src_long: usize, out_long: usize) -> (Opti
         NrLum { sigma: (1.0 + 2.5 * lum) * scale.max(0.4), eps: 0.002 + lum * lum * 0.25 * (1.0 - 0.7 * detail), k: lum.sqrt() }
     });
     let c = (col > 0.0).then(|| {
-        let sigma = (1.5 + 6.0 * col) * scale.max(0.35) * (1.0 + (s.detail.nr_color_smoothness / 100.0) as f32);
-        let keep = (s.detail.nr_color_detail / 100.0) as f32 * 0.5;
-        NrColor { sigma, t: col * (1.0 - keep) }
+        let smooth = (s.detail.nr_color_smoothness / 100.0) as f32;
+        let detail = (s.detail.nr_color_detail / 100.0) as f32;
+        let sigma = (3.0 + 7.0 * col) * scale.max(0.35) * (1.0 + smooth);
+        // eps follows the noise measured in the photo (its flat areas), not a fixed number, so a
+        // low-ISO file keeps its colour detail and a dark high-ISO one is actually calmed (a fixed
+        // blur, by contrast, leaves coarse chroma behind). Detail keeps fine colour back by
+        // lowering eps. The Color slider sets the radius and how much of the smoothed chroma is
+        // written back — not eps — so raising it smooths further without bleeding more across a
+        // colour edge. Two passes at one radius reach a low residual.
+        let n2 = (noise * scale * scale).max(1e-12);
+        let eps = CNR_NOISE_STRENGTH * (1.5 - detail) * n2;
+        let t = (col / 0.25).clamp(0.0, 1.0);
+        NrColor { sigma, passes: CNR_PASSES, eps, t }
     });
     (l, c)
 }
 
 /// Noise reduction at output resolution: luminance via an edge-aware self-guided filter on
-/// log-luminance, colour by blurring chromaticity (rgb / Y) and re-applying the original luminance.
-/// Radii scale with how much the source was downsampled (preview noise is already averaged out).
-pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, src_long: usize, out_long: usize) {
-    let (lum, col) = nr_params(s, src_long, out_long);
+/// log-luminance, colour by edge-aware smoothing the square-root R/B colour differences from green
+/// (green and the pixel's luminance are untouched). Radii scale with how much the source was
+/// downsampled (preview noise is already averaged out).
+pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, src_long: usize, out_long: usize, noise: f32) {
+    let (lum, col) = nr_params(s, src_long, out_long, noise);
     let w = img.width;
     if let Some(nr) = lum {
         let _t = crate::profiling().then(std::time::Instant::now);
@@ -347,18 +421,31 @@ pub fn denoise(img: &mut Rgb32f, s: &DevelopSettings, src_long: usize, out_long:
     }
     if let Some(nr) = col {
         let _t = crate::profiling().then(std::time::Instant::now);
-        let chroma = img.map(|c| {
-            let y = luminance_2020(c).max(1e-6);
-            [c[0] / y, c[1] / y, c[2] / y]
-        });
-        let b = gaussian(&chroma, nr.sigma);
+        // Colour noise lives in the R/B colour differences from green (each R/B site is
+        // interpolated from a quarter of the samples, green from half). A self-guided filter of
+        // those differences removes the noise in flat areas while keeping colour edges — so the
+        // noise is removed instead of being re-applied to every channel, and no colour bleeds
+        // across an edge (a plain blur fringes at high Color values; a luminance `rgb / Y` basis
+        // leaks noise back as channel noise and blows up in the shadows).
+        let dr = img.map(|c| chroma_sqrt(c)[0]);
+        let db = img.map(|c| chroma_sqrt(c)[1]);
+        let smooth = |p: &Plane| {
+            let mut q = guided_fast(p, nr.sigma, nr.eps);
+            for _ in 1..nr.passes {
+                q = guided_fast(&q, nr.sigma, nr.eps);
+            }
+            q
+        };
+        let qr = smooth(&dr);
+        let qb = smooth(&db);
+        let gs = img.map(|c| (c[1] + CHROMA_OFF).max(0.0).sqrt());
         for_rows(&mut img.data, w, |y, row| {
             for (x, p) in row.iter_mut().enumerate() {
                 let i = y * w + x;
-                let yl = luminance_2020(*p);
-                let c0 = chroma.data[i];
-                let cb = b.data[i];
-                *p = [0, 1, 2].map(|k| ((c0[k] + (cb[k] - c0[k]) * nr.t) * yl).max(0.0));
+                let r = (gs.data[i] + dr.data[i] + (qr.data[i] - dr.data[i]) * nr.t).max(0.0);
+                let b = (gs.data[i] + db.data[i] + (qb.data[i] - db.data[i]) * nr.t).max(0.0);
+                p[0] = (r * r - CHROMA_OFF).max(0.0);
+                p[2] = (b * b - CHROMA_OFF).max(0.0);
             }
         });
         if let Some(t) = _t {
@@ -641,7 +728,7 @@ mod nr_tests {
         let (v0, m0) = var(&img);
         let mut s = DevelopSettings::default();
         s.detail.nr_luminance = 80.0;
-        denoise(&mut img, &s, 64, 64);
+        denoise(&mut img, &s, 64, 64, 0.0);
         let (v1, m1) = var(&img);
         assert!(v1 < v0 * 0.5, "{v0} -> {v1}");
         assert!((m1 - m0).abs() < 0.01);

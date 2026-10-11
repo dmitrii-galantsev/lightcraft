@@ -156,19 +156,38 @@ fn chroma_k(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups
     put_rgb(i, vec3<f32>(c0.x / y, c0.y / y, c0.z / y));
 }
 
-// Colour NR: blend chromaticity towards its blur and re-apply luminance (a: image, b: chroma,
-// c: blurred chroma). P[1] = t.
+// Colour NR square-root chroma difference (a: image). P[1] = 0: √(R+off)−√(G+off); 1: √(B+off)−√(G+off).
+// P[2] = off. Green is the anchor (each R/B site is interpolated from a quarter of the samples), so
+// the differences carry the colour noise.
+@compute @workgroup_size(256)
+fn chroma_sq(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+    let i = lin_index(g, nw);
+    if (i >= pu(0u)) {
+        return;
+    }
+    let c0 = rgb_a(i);
+    let off = pf(2u);
+    let gg = sqrt(max(c0.y + off, 0.0));
+    dst[i] = select(sqrt(max(c0.z + off, 0.0)) - gg, sqrt(max(c0.x + off, 0.0)) - gg, pu(1u) == 0u);
+}
+
+// Colour NR: recombine the smoothed square-root R/B colour differences and keep green (a: image,
+// b: smoothed √(R+off)−√(G+off), c: smoothed √(B+off)−√(G+off)). P[1] = off, P[2] = t.
 @compute @workgroup_size(256)
 fn nr_col(@builtin(global_invocation_id) g: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
     let i = lin_index(g, nw);
     if (i >= pu(0u)) {
         return;
     }
-    let yl = lum2020(rgb_a(i));
-    let t = pf(1u);
-    let c0 = vec3<f32>(b[3u * i], b[3u * i + 1u], b[3u * i + 2u]);
-    let cb = vec3<f32>(c[3u * i], c[3u * i + 1u], c[3u * i + 2u]);
-    put_rgb(i, max((c0 + (cb - c0) * t) * yl, vec3<f32>(0.0)));
+    let c0 = rgb_a(i);
+    let off = pf(1u);
+    let t = pf(2u);
+    let gg = sqrt(max(c0.y + off, 0.0));
+    let d0r = sqrt(max(c0.x + off, 0.0)) - gg;
+    let d0b = sqrt(max(c0.z + off, 0.0)) - gg;
+    let r = max(gg + d0r + (b[i] - d0r) * t, 0.0);
+    let bl = max(gg + d0b + (c[i] - d0b) * t, 0.0);
+    put_rgb(i, max(vec3<f32>(r * r - off, c0.y, bl * bl - off), vec3<f32>(0.0)));
 }
 
 // Every P[1]-th value of `a` (airlight sampling). P[0] = output count.

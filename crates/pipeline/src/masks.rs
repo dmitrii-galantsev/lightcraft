@@ -531,7 +531,7 @@ pub fn accumulate(v: f32, a: f32, flow: f32, density: f32) -> f32 {
 pub const AUTO_TOL_EV: f32 = 0.5;
 pub const AUTO_TOL_CHROMA: f32 = 0.25;
 
-/// Chromaticity `rgb / Y` (as colour noise reduction uses it).
+/// Chromaticity `rgb / Y` (used by Auto Mask and the local Moiré / Noise plane).
 #[inline]
 pub fn chromaticity(c: [f32; 3]) -> [f32; 3] {
     let y = lightcraft_color::luminance_2020(c).max(1e-6);

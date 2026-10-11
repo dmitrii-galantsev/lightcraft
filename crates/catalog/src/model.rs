@@ -167,8 +167,39 @@ pub fn parse_shutter_seconds(s: &str) -> Option<f64> {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Meta {
+    /// `Make Model`, as shown and used to key per-camera import defaults.
     pub camera: String,
+    /// Exif `Make` alone (`camera` is `Make Model`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub make: String,
+    /// Exif `Model` alone.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub model: String,
     pub lens: String,
+    /// Exif `LensMake`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub lens_make: String,
+    /// Exif `LensSpecification`: min/max focal length (mm) and min/max f-number at those.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens_spec: Option<[f32; 4]>,
+    /// Exif `BodySerialNumber`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub serial_number: String,
+    /// Exif `ExposureProgram` code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exposure_program: Option<u16>,
+    /// Exif `MeteringMode` code.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metering_mode: Option<u16>,
+    /// Exif `WhiteBalance` (0 auto, 1 manual).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub white_balance: Option<u16>,
+    /// Exif `Flash` bit field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flash: Option<u16>,
+    /// Exif `FocalLengthIn35mmFilm` (mm).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focal_length_35mm: Option<f32>,
     pub focal_mm: Option<f32>,
     pub aperture: Option<f32>,
     pub shutter: String,

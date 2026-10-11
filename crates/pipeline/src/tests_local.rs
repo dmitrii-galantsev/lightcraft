@@ -82,6 +82,58 @@ fn local_moire_removes_colour_speckle_inside_the_mask() {
 }
 
 #[test]
+fn colour_nr_removes_chroma_noise_without_raising_green() {
+    // A grey with R/B chroma speckle over a green-only texture: the colour sliders alone must calm
+    // the chroma and leave the green texture (and the luminance) alone.
+    let src = Rgb32f::from_fn(W, H, |x, y| {
+        let n = 0.2 * noise(x, y, 5);
+        let g = 0.16 + 0.03 * noise(x, y, 9);
+        [g * (1.0 + n), g, g * (1.0 - n)]
+    });
+    let mut s = DevelopSettings::default();
+    s.detail.nr_color = 25.0;
+    let (plain, on) = (shot(&src, &DevelopSettings::default()), shot(&src, &s));
+    let (cr0, cr1) = (spread(&plain, 10, 230, chroma), spread(&on, 10, 230, chroma));
+    assert!(cr1 < 0.6 * cr0, "chroma noise {cr0} -> {cr1}");
+    // Green is the anchor: the old rgb/Y basis re-applied the noise-carrying luminance and made
+    // every channel (green included) noisier as the blend deepened. A real green texture survives.
+    let green = |img: &Rgba8| spread(img, 10, 230, |p| p[1] as f32);
+    assert!((green(&on) - green(&plain)).abs() <= 0.1 * green(&plain) + 0.5, "green {} -> {}", green(&plain), green(&on));
+    // and a flat coloured region keeps its colour (only the noise goes)
+    let src = Rgb32f::filled(W, H, [0.24, 0.10, 0.06]);
+    let plain = shot(&src, &DevelopSettings::default());
+    let on = shot(&src, &s);
+    let mean = |img: &Rgba8, c: usize| {
+        (4..H - 4).flat_map(|y| (10..230).map(move |x| (x, y))).map(|(x, y)| img.data[y * W + x][c] as f32).sum::<f32>() / (220 * (H - 8)) as f32
+    };
+    for c in 0..3 {
+        assert!((mean(&on, c) - mean(&plain, c)).abs() < 2.0, "channel {c} colour shift: {} -> {}", mean(&plain, c), mean(&on, c));
+    }
+}
+
+#[test]
+fn colour_nr_at_high_values_does_not_bleed_across_a_colour_edge() {
+    // red | grey step at x = 140, both sides carrying chroma speckle (so the filter is actually
+    // smoothing): raising Color must not push red into the grey side — issue #815's "fringes at
+    // high values", which a plain blur shows and an edge-aware one does not.
+    let src = Rgb32f::from_fn(W, H, |x, y| {
+        let n = 0.12 * noise(x, y, 3);
+        let base = if x < 140 { [0.5, 0.05, 0.05] } else { [0.5; 3] };
+        [base[0] * (1.0 + n), base[1], base[2] * (1.0 - n)]
+    });
+    let mut s = DevelopSettings::default();
+    s.detail.nr_color = 100.0;
+    let plain = shot(&src, &DevelopSettings::default());
+    let on = shot(&src, &s);
+    // red's R−G on the near side is the edge contrast; a few px into the grey side is the bleed
+    let red = |img: &Rgba8| (4..H - 4).map(|y| img.data[y * W + 130][0] as f32 - img.data[y * W + 130][1] as f32).sum::<f32>() / (H - 8) as f32;
+    let bleed = |img: &Rgba8| (4..H - 4).map(|y| img.data[y * W + 152][0] as f32 - img.data[y * W + 152][1] as f32).sum::<f32>() / (H - 8) as f32;
+    let (b, r) = (bleed(&on), red(&plain));
+    // a plain blur of radius 15 px pushes several percent of the 228-LSB contrast into the grey
+    assert!(b < 0.03 * r, "colour bled {b} into a {r}-contrast edge");
+}
+
+#[test]
 fn local_defringe_desaturates_purple_edges_only() {
     // dark | bright edge at x = 40 (inside the mask) and x = 200 (outside), each with a purple
     // fringe column; a flat purple patch (no edge) at x 60..80

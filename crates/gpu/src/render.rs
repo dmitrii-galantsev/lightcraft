@@ -796,7 +796,7 @@ fn linear(cx: &mut Cx<'_>, sampled: &Buf, info: &SourceInfo, plan: &Plan<'_>, ho
 fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
     let (w, h) = (plan.w, plan.h);
     let n = w * h;
-    let (lum, col) = local::nr_params(&plan.settings, plan.src_long, plan.frame.output_long(w, h));
+    let (lum, col) = local::nr_params(&plan.settings, plan.src_long, plan.frame.output_long(w, h), plan.chroma_noise);
     let mut img = img;
     if let Some(nr) = lum {
         let l = cx.gpu.buffer(n);
@@ -807,11 +807,19 @@ fn denoise(cx: &mut Cx<'_>, img: Buf, plan: &Plan<'_>) -> Buf {
         img = out;
     }
     if let Some(nr) = col {
-        let chroma = cx.gpu.buffer(n * 3);
-        map(cx, "chroma_k", n, &[], [Some(&img), None, None], &chroma);
-        let b = gaussian(cx, &chroma, w, h, 3, nr.sigma);
+        let off = local::CHROMA_OFF.to_bits();
+        let dr = cx.gpu.buffer(n);
+        map(cx, "chroma_sq", n, &[0, off], [Some(&img), None, None], &dr);
+        let db = cx.gpu.buffer(n);
+        map(cx, "chroma_sq", n, &[1, off], [Some(&img), None, None], &db);
+        let mut qr = guided_fast(cx, &dr, w, h, nr.sigma, nr.eps);
+        let mut qb = guided_fast(cx, &db, w, h, nr.sigma, nr.eps);
+        for _ in 1..nr.passes {
+            qr = guided_fast(cx, &qr, w, h, nr.sigma, nr.eps);
+            qb = guided_fast(cx, &qb, w, h, nr.sigma, nr.eps);
+        }
         let out = cx.gpu.buffer(n * 3);
-        map(cx, "nr_col", n, &[nr.t.to_bits()], [Some(&img), Some(&chroma), Some(&b)], &out);
+        map(cx, "nr_col", n, &[off, nr.t.to_bits()], [Some(&img), Some(&qr), Some(&qb)], &out);
         img = out;
     }
     img
