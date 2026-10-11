@@ -53,9 +53,9 @@ cited here still exists. Formerly docs/parity.md.
 | Y. Menus | 84 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
 | Z. Keyboard shortcuts (desktop) | 76 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
 | Lightroom Classic extras | 34 | 16 | 35 | 8 | — | 24/26 (92%) |
-| **Total** | 407 | 50 | 73 | 35 | 192/200 (96%) | 145/157 (92%) |
+| **Total** | 408 | 50 | 73 | 35 | 192/200 (96%) | 145/157 (92%) |
 
-Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.5%** of 530 in-scope rows — P0 98.0% of 200 · P1 95.2% of 157 · P2 49.7% of 172.
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.5%** of 531 in-scope rows — P0 98.0% of 200 · P1 95.2% of 157 · P2 50.0% of 173.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes
@@ -222,7 +222,7 @@ differences and missing bindings are in [ui-parity.md](ui-parity.md#shortcuts).
 | LR-EDIT-LENSBLUR | Lens blur | P2 | ⬜ | | settings field reserved, not rendered |
 | LR-EDIT-CALIB | Calibration [Classic] | P1 | ✅ | `ctl:calibration.*` | shadows tint, red/green/blue primary hue and saturation; read/written in XMP |
 | LR-EDIT-SECTION-TOGGLE | Section on/off | P1 | ✅ | `cmd:develop.sectionEnabled`, `crates/develop/src/lib.rs` (`effective`) | the eye on a section header hides its adjustments: Light (with the curve), Color (white balance, presence, mixers, grading, point colour), Effects, Detail, Optics, Geometry, Calibration; masks stay on (issue #316 fixed Light, Color and Detail, which had no effect) |
-| LR-EDIT-NEGATIVE | Negative conversion (film scans) | P2 | ✅ | `cmd:develop.negative`, `cmd:develop.negativeMeasure`, `cmd:develop.negativeDark`, `cmd:develop.negativeProfile`, `cmd:develop.negativeReset`, `ctl:negative.*`, `crates/negative/`, `crates/pipeline/src/negative.rs`, `docs/negative-conversion.md` | a scan of a film negative becomes a positive: measure the film base from the border, invert per channel with the confirmed window `out=(base−in)/(base−dark)`, then the modelled preset vocabulary and a user-supplied `.dcp` camera profile; the dark endpoint is an explicit, unfitted parameter and the plugin's nonlinear colour mixing is not reproduced (see the doc); no plugin data is shipped |
+| LR-EDIT-NEGATIVE | Negative conversion (film scans) | P2 | ✅ | `cmd:develop.negative`, `cmd:develop.negativeMeasure`, `cmd:develop.negativeDark`, `cmd:develop.negativeState`, `cmd:develop.negativeProfile`, `cmd:develop.negativeReset`, `ctl:negative.*`, `crates/negative/`, `crates/pipeline/src/negative.rs`, `docs/negative-conversion.md` | a scan of a film negative becomes a positive: measure the film base from the border, invert per channel with the confirmed window `out=(base−in)/(base−dark)`, then the modelled preset vocabulary and a user-supplied `.dcp` camera profile; the dark endpoint is an explicit, unfitted parameter and the plugin's nonlinear colour mixing is not reproduced (see the doc); no plugin data is shipped |
 | LR-EDIT-RESET | Reset all / section / slider | P0 | ✅ | `cmd:develop.reset`, `cmd:develop.resetSection`, `cmd:develop.resetControl`, `crates/ui-egui/src/widgets.rs` (double-click) | no "reset to open" |
 | LR-EDIT-SHOWORIG | Show original | P0 | ✅ | `cmd:view.showOriginal` | |
 

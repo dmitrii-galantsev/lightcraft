@@ -921,6 +921,49 @@ pub(crate) mod tests {
         }
     }
 
+    /// `warp_cfa` resamples each colour on its own samples: the identity plane is exact, green never moves, and a
+    /// red plane that magnifies moves red sites outward. The mosaic encodes the sublattice x index in red and blue
+    /// (so bilinear over the sublattice is exact) and a constant in green.
+    #[test]
+    fn cfa_warp_moves_red_and_blue_only() {
+        use crate::demosaic::mosaic_from_rgb;
+        let (w, h) = (32usize, 24usize);
+        let cfa = Cfa::bayer("RGGB").unwrap();
+        let img = Rgb32f::from_fn(w, h, |x, y| match cfa.color_at(x, y) {
+            0 => [x as f32, 1.0, 0.0],
+            2 => [0.0, 1.0, x as f32],
+            _ => [0.5, 0.5, 0.5],
+        });
+        let n = mosaic_from_rgb(&img, &cfa);
+        let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let id = Opcode::WarpRectilinear { planes: vec![identity; 3], center: [0.5, 0.5] };
+        assert_eq!(warp_cfa(&n, &id).data, n.data, "the identity warp changes nothing");
+        let op = Opcode::WarpRectilinear { planes: vec![[1.02, 0.0, 0.0, 0.0, 0.0, 0.0], identity, identity], center: [0.5, 0.5] };
+        let out = warp_cfa(&n, &op);
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                match cfa.color_at(x, y) {
+                    // green is the identity plane: its samples are untouched, bit for bit
+                    1 => assert_eq!(out.data[i], n.data[i], "green ({x},{y})"),
+                    0 => {
+                        if (2..=w / 2 - 2).contains(&x) {
+                            assert!(out.data[i] < n.data[i], "red ({x},{y}) moves inward: {} → {}", n.data[i], out.data[i]);
+                        } else if (w / 2 + 2..=w - 4).contains(&x) {
+                            assert!(out.data[i] > n.data[i], "red ({x},{y}) moves outward: {} → {}", n.data[i], out.data[i]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // a non-Bayer or multi-plane input is returned unchanged
+        let grey = Normalized { width: 4, height: 4, cpp: 1, data: vec![0.3; 16], cfa: None };
+        assert_eq!(warp_cfa(&grey, &op).data, grey.data);
+        let one_plane = Opcode::WarpRectilinear { planes: vec![identity], center: [0.5, 0.5] };
+        assert_eq!(warp_cfa(&n, &one_plane).data, n.data);
+    }
+
     /// `WarpRectilinear2` parameter bytes (spec 1.6.0.0: N, then per set kr0..kr14, kt0, kt1, min/max valid radius,
     /// then the centre and `reciprocalRadial`).
     fn wr2_params(sets: &[[f64; WR2_LEN]], center: [f64; 2], reciprocal: u32) -> Vec<u8> {
@@ -1090,48 +1133,5 @@ pub(crate) mod tests {
         // a refused (Unknown) opcode 14 triggers no skip
         let bad = Opcode::Unknown { id: 14, flags: 1, params: vec![] };
         assert!(applied_ops(&[bad, wr]).any(|o| matches!(o, Opcode::WarpRectilinear { .. })));
-    }
-
-    /// `warp_cfa` resamples each colour on its own samples: the identity plane is exact, green never moves, and a
-    /// red plane that magnifies moves red sites outward. The mosaic encodes the sublattice x index in red and blue
-    /// (so bilinear over the sublattice is exact) and a constant in green.
-    #[test]
-    fn cfa_warp_moves_red_and_blue_only() {
-        use crate::demosaic::mosaic_from_rgb;
-        let (w, h) = (32usize, 24usize);
-        let cfa = Cfa::bayer("RGGB").unwrap();
-        let img = Rgb32f::from_fn(w, h, |x, y| match cfa.color_at(x, y) {
-            0 => [x as f32, 1.0, 0.0],
-            2 => [0.0, 1.0, x as f32],
-            _ => [0.5, 0.5, 0.5],
-        });
-        let n = mosaic_from_rgb(&img, &cfa);
-        let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let id = Opcode::WarpRectilinear { planes: vec![identity; 3], center: [0.5, 0.5] };
-        assert_eq!(warp_cfa(&n, &id).data, n.data, "the identity warp changes nothing");
-        let op = Opcode::WarpRectilinear { planes: vec![[1.02, 0.0, 0.0, 0.0, 0.0, 0.0], identity, identity], center: [0.5, 0.5] };
-        let out = warp_cfa(&n, &op);
-        for y in 0..h {
-            for x in 0..w {
-                let i = y * w + x;
-                match cfa.color_at(x, y) {
-                    // green is the identity plane: its samples are untouched, bit for bit
-                    1 => assert_eq!(out.data[i], n.data[i], "green ({x},{y})"),
-                    0 => {
-                        if (2..=w / 2 - 2).contains(&x) {
-                            assert!(out.data[i] < n.data[i], "red ({x},{y}) moves inward: {} → {}", n.data[i], out.data[i]);
-                        } else if (w / 2 + 2..=w - 4).contains(&x) {
-                            assert!(out.data[i] > n.data[i], "red ({x},{y}) moves outward: {} → {}", n.data[i], out.data[i]);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // a non-Bayer or multi-plane input is returned unchanged
-        let grey = Normalized { width: 4, height: 4, cpp: 1, data: vec![0.3; 16], cfa: None };
-        assert_eq!(warp_cfa(&grey, &op).data, grey.data);
-        let one_plane = Opcode::WarpRectilinear { planes: vec![identity], center: [0.5, 0.5] };
-        assert_eq!(warp_cfa(&n, &one_plane).data, n.data);
     }
 }

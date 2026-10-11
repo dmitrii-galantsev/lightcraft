@@ -166,8 +166,16 @@ pub fn typed_value(spec: &ControlSpec, text: &str) -> Option<f64> {
 
 /// A slider's value as shown next to its label.
 pub(crate) fn shown_value(spec: &ControlSpec, v: f64) -> String {
-    let shown = if spec.id == "wb.temp" { format!("{v:.0}") } else { spec.format(v).replace("+0.00", "0").replace("-0.00", "0") };
-    if shown == "+0" || shown == "-0" { "0".to_string() } else { shown }
+    if spec.id == "wb.temp" {
+        return format!("{v:.0}");
+    }
+    let shown = spec.format(v);
+    if shown == "+0" || shown == "-0" {
+        return "0".to_string();
+    }
+    // a value that rounds to zero at the control's precision reads "0", not a truncated prefix
+    let zeros = 10f64.powi(spec.decimals as i32);
+    if (v * zeros).round() == 0.0 { "0".to_string() } else { shown }
 }
 
 /// How a slider row is dressed beyond its spec: an overriding label, a dimmed read ("this is the
@@ -391,6 +399,12 @@ pub fn slider_look(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, l
     out
 }
 
+/// A Lightroom slider row (label + value above a track with a hollow ring thumb).
+/// Double-click the label or thumb to reset. Shift-drag = fine adjustment. Click the value to
+/// type one: Return or clicking away applies it, Esc keeps the old one.
+pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_override: Option<&str>) -> SliderOut {
+    slider_look(ui, spec, value, enabled, SliderLook { label: label_override.map(Into::into), ..SliderLook::default() })
+}
 /// Convert vertical wheel movement to bounded slider steps, keeping sub-notch
 /// trackpad movement between frames without amplifying a single large event.
 fn wheel_nudges(remainder: &mut f32, delta: f32) -> f64 {
@@ -399,12 +413,6 @@ fn wheel_nudges(remainder: &mut f32, delta: f32) -> f64 {
     let steps = (total / POINTS_PER_STEP).trunc();
     *remainder = total - steps * POINTS_PER_STEP;
     f64::from(steps)
-}
-/// A Lightroom slider row (label + value above a track with a hollow ring thumb).
-/// Double-click the label or thumb to reset. Shift-drag = fine adjustment. Click the value to
-/// type one: Return or clicking away applies it, Esc keeps the old one.
-pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_override: Option<&str>) -> SliderOut {
-    slider_look(ui, spec, value, enabled, SliderLook { label: label_override.map(Into::into), ..SliderLook::default() })
 }
 
 /// `value` moved by `steps` keyboard nudges: one nudge is about 1/200 of the range, a whole

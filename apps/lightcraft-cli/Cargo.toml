@@ -37,3 +37,8 @@ dhat-heap = ["dep:dhat"]
 # Open HEIC/HEIF photos (the optional lightcraft-heif crate). Not default so distributors choose
 # it (HEVC patents); build with `--features heif` to include it.
 heif = ["lightcraft-codecs/heif"]
+
+[dev-dependencies]
+lightcraft-develop = { workspace = true }
+lightcraft-negative = { workspace = true }
+lightcraft-pipeline = { workspace = true }

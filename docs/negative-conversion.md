@@ -286,7 +286,7 @@ to the recorded `whitePointOrigin` on black-and-white frames (mean |error| 6.9 c
 for the placeholder) but not on colour frames (37 and 15 against 43 and 23), and the render error that
 dominates PSNR sits elsewhere: on the black-and-white frames the render's dark end is 100–150 code
 values above the preview's, because the colour render (raw white balance and camera profile at
-2000–2650 K, see `lc-endpoint`) is not the frame NLP analysed. Until that stage is faithful the endpoint
+2000–2650 K) is not the frame NLP analysed. Until that stage is faithful the endpoint
 cannot be judged on PSNR.
 
 Every row comes from **the same command with the same settings**, and the film base is **measured**

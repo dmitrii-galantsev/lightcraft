@@ -58,7 +58,8 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
 /// a DNG's own, or the raw reader's equivalent of the camera's correction, e.g. Sony distortion, Panasonic / Leica RW2
 /// distortion), plus whether it records its own lateral-CA table (applied on the CFA before demosaic, `lightcraft_raw`'s
 /// `lateral_ca`), re-expressed for the default-cropped, EXIF-oriented image. These are the only "profile"
-/// corrections LightCraft applies.pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop::EmbeddedLens> {
+/// corrections LightCraft applies.
+pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop::EmbeddedLens> {
     use lightcraft_develop::{EmbeddedLens, EmbeddedVignette, EmbeddedWarp, EmbeddedWarpStage, WARP_STAGES};
     use lightcraft_geom::Point;
     use lightcraft_raw::Opcode;
@@ -88,7 +89,8 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
     // without one the first WarpRectilinear is the lens warp, as it always was.
     let chain = ops.iter().any(|op| matches!(op, Opcode::WarpRectilinear2 { .. }));
     let mut stages = Vec::new();
-    for op in ops {        match op {
+    for op in ops {
+        match op {
             Opcode::WarpRectilinear2 { planes, center, reciprocal, .. } if !planes.is_empty() => {
                 let (center, radius) = centre(*center);
                 let p = |i: usize| planes[i.min(planes.len() - 1)];
@@ -127,7 +129,8 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
     for (slot, st) in lens.stages.iter_mut().zip(stages.into_iter().take(WARP_STAGES)) {
         *slot = Some(st);
     }
-    if lens.is_empty() {        return None;
+    if lens.is_empty() {
+        return None;
     }
     Some(lightcraft_pipeline::optics::reorient_lens(&lens, raw.orientation, cw, ch))
 }

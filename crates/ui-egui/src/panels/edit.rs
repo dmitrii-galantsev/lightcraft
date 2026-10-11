@@ -501,7 +501,19 @@ fn negative_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSetti
     }
 
     // Border: Auto is the slider's left end (the frame picks the ring; the header stat says which)
-    control(app, ui, d, "negative.border", n.enabled);
+    // the spec always exists in the control table; if a rename ever orphans it, the row is skipped
+    // rather than crashing the app (the crate denies panicking macros)
+    if let Some(border_spec) = controls::find("negative.border") {
+        let border = controls::get(d, "negative.border").unwrap_or(border_spec.default);
+        let out = crate::widgets::slider_look(
+            ui,
+            border_spec,
+            border,
+            n.enabled,
+            crate::widgets::SliderLook { label: Some(crate::i18n::tr("Border").to_string()), ..crate::widgets::SliderLook::default() },
+        );
+        apply_slider_out(app, border_spec, out, |app, v| app.run("develop.set", json!({"control": "negative.border", "value": v})));
+    }
 
     // Dark Endpoint: Auto measures the frame's near-min and shows it read-only; Manual keeps the
     // three sliders, starting from what the frame measured

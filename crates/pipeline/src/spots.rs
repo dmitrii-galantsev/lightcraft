@@ -247,7 +247,7 @@ fn fill_box(src: &mut [[f32; 3]], tgt: &[[f32; 3]], alpha: &[f32], bw: usize, bh
     let flat: Vec<f32> = tgt.iter().flatten().copied().collect();
     let out = lightcraft_inpaint::complete(bw, bh, 3, &flat, &hole, &lightcraft_inpaint::CompleteParams::default())
         .unwrap_or_else(|| lightcraft_inpaint::membrane_fill(bw, bh, 3, &flat, &hole));
-    for (d, v) in src.iter_mut().zip(out.chunks_exact(3)) {
+    for (d, v) in src.iter_mut().zip(out.as_chunks::<3>().0) {
         *d = [v[0], v[1], v[2]];
     }
 }

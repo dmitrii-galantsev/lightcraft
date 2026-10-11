@@ -1617,6 +1617,7 @@
   "Quit Anyway": "Всё равно выйти",
   "Synchronizing folder": "Синхронизация папки",
   "Looking for changes": "Поиск изменений",
+  "Match this camera": "Подобрать для этой камеры",
   "This is a Lightroom catalog, not a LightCraft library. Import it into a LightCraft library instead?": "Это каталог Lightroom, а не библиотека LightCraft. Импортировать его в библиотеку LightCraft?",
   "The import reads the catalog without changing it and adds its photos, edits, keywords and collections to the library open now.": "Импорт читает каталог, не изменяя его, и добавляет его фото, правки, ключевые слова и коллекции в открытую сейчас библиотеку.",
   "Albums hold library photos: Add to My Photos first": "В альбомах только фото из библиотеки: сначала добавьте их в «Мои фото»",

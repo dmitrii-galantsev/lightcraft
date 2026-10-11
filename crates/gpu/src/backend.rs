@@ -175,6 +175,10 @@ static MARKER: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// Scopes of driver work (device creation, shader and pipeline compilation) running now, so
 /// that overlapping ones (the window-side warm-up and a first denoise) share one marker file.
 static ACTIVE: Mutex<u32> = Mutex::new(0);
+/// In test builds every driver-work scope takes this, so the marker tests (which need the
+/// process quiet around their assertions) don't race a concurrent device or kernel scope.
+#[cfg(test)]
+pub(crate) static DRIVER_SCOPE_GATE: Mutex<()> = Mutex::new(());
 
 /// Write this file before the compute device is created or any shader / pipeline is compiled
 /// (the kernels, the denoise network's), and remove it once that returned (successfully or not).
@@ -226,6 +230,13 @@ impl Drop for Armed {
 /// Run driver work `f` (`what`: "device creation", "kernel compilation"…) between writing and
 /// removing the init marker (if one is set).
 pub(crate) fn with_marker<T>(what: &str, f: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    let _gate = DRIVER_SCOPE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+    marker_scope(what, f)
+}
+
+/// [`with_marker`] without the test gate (the marker tests hold it for their whole body).
+fn marker_scope<T>(what: &str, f: impl FnOnce() -> T) -> T {
     let marker = MARKER.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(m) = &marker {
         arm(m, &ACTIVE, what);
@@ -422,11 +433,12 @@ mod tests {
     #[test]
     fn init_marker_is_written_during_creation_and_removed_after() {
         let _turn = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _gate = DRIVER_SCOPE_GATE.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("lc-gpu-marker-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
         set_init_marker(Some(m.clone()));
-        let seen = with_init_marker(Backends::DX12, || m.exists());
+        let seen = marker_scope("device and kernel creation (backends DX12)", || m.exists());
         set_init_marker(None);
         assert!(seen, "the marker exists while the device is created");
         assert!(!m.exists(), "and is removed afterwards");
@@ -506,11 +518,12 @@ mod tests {
     #[test]
     fn a_panic_inside_the_scope_still_removes_the_marker() {
         let _turn = GLOBAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _gate = DRIVER_SCOPE_GATE.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("lc-gpu-panic-{}", std::process::id()));
         let m = dir.join("gpu-init.marker");
         let _ = std::fs::remove_dir_all(&dir);
         set_init_marker(Some(m.clone()));
-        let r = std::panic::catch_unwind(|| with_marker("kernel compilation", || panic!("compile")));
+        let r = std::panic::catch_unwind(|| marker_scope("kernel compilation", || panic!("compile")));
         set_init_marker(None);
         assert!(r.is_err());
         assert!(!m.exists(), "the process survived, so nothing is left to report");

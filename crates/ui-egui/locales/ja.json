@@ -1905,6 +1905,7 @@
   "Finding faces": "顔を検索中",
   "Synchronizing folder": "フォルダを同期中",
   "Looking for changes": "変更を確認中",
+  "Match this camera": "このカメラに一致",
   "This is a Lightroom catalog, not a LightCraft library. Import it into a LightCraft library instead?": "これは Lightroom カタログで、LightCraft ライブラリではありません。代わりに LightCraft ライブラリに読み込みますか?",
   "The import reads the catalog without changing it and adds its photos, edits, keywords and collections to the library open now.": "読み込みはカタログを変更せずに読み取り、写真・編集・キーワード・コレクションを現在開いているライブラリに追加します。",
   "Albums hold library photos: Add to My Photos first": "アルバムに入れられるのはライブラリの写真です：先にマイフォトに追加してください",

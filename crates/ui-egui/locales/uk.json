@@ -2084,6 +2084,7 @@
   "Reset Panel Layout": "Reset Panel Layout",
   "Resize panel window": "Resize panel window",
   "Resize panels": "Resize panels",
+  "Match this camera": "Підібрати для цієї камери",
   "This is a Lightroom catalog, not a LightCraft library. Import it into a LightCraft library instead?": "Це каталог Lightroom, а не бібліотека LightCraft. Імпортувати його до бібліотеки LightCraft?",
   "The import reads the catalog without changing it and adds its photos, edits, keywords and collections to the library open now.": "Імпорт читає каталог, не змінюючи його, і додає його фото, редагування, ключові слова та колекції до відкритої зараз бібліотеки.",
   "Albums hold library photos: Add to My Photos first": "В альбомах лише фото з бібліотеки: спершу додайте їх до моїх фото",

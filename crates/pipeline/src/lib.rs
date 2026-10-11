@@ -454,7 +454,23 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
     let chroma_noise = local::chroma_noise(src);
     let luma_noise = local::luma_noise(src);
     let lin_key = hash_of((pre_nr_key, [d.nr_luminance, d.nr_detail, d.nr_color, d.nr_color_detail, d.nr_color_smoothness].map(f64::to_bits)));
-    Plan { settings, frame, w, h, px_per_long, src_long, geo, lin_key, pre_nr_key, eyes, fixed_air, keep, mattes: info.mattes.clone(), chroma_noise, luma_noise }
+    Plan {
+        settings,
+        frame,
+        w,
+        h,
+        px_per_long,
+        src_long,
+        geo,
+        lin_key,
+        pre_nr_key,
+        eyes,
+        fixed_air,
+        keep,
+        mattes: info.mattes.clone(),
+        chroma_noise,
+        luma_noise,
+    }
 }
 
 /// Whether the scene-linear stage needs work only the CPU does (defringe, spot removal).

@@ -1,12 +1,6 @@
 # Gaps: where LightCraft falls short of Lightroom
 
-<<<<<<< HEAD
 > **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (integration batches 27–30 merged in; the negative conversion landed, its dark-endpoint and colour-mixing gaps tracked as #29) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
-||||||| parent of 0a5006d7 (negative: film-negative conversion wired into the pipeline)
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created; absorbs the checklist's Top gaps and the ROADMAP's honest assessment, re-ranked after a full re-measure) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
-=======
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (negative conversion landed; its dark-endpoint and colour-mixing gaps tracked as #29) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
->>>>>>> 0a5006d7 (negative: film-negative conversion wired into the pipeline)
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is
@@ -22,14 +16,6 @@ Hours are Opus 5.5 agent wall-clock hours (see [target-app-parity.md](target-app
 | # | Gap | Evidence | User impact | Hours | Doc |
 |---:|---|---|---|---:|---|
 | 1 B | **Camera colour is estimated, not measured** (LR-PROF-CAMERACOLOR). Raws start from a per-file fit to the camera JPEG, 4 bundled profiles or 52 spectral matrices; others use a neutral matrix (a black-and-white camera JPEG gives its tone curve only, #577) | ΔE vs camera JPEG 2.9–10 after fitting (raw-parity.md); 0 chart-calibrated models vs 1,500 Adobe Standard profiles | every raw shooter sees colour that is close but not Lightroom's; some get neutral-matrix colour | 50–90 | [raw-parity](raw-parity.md#colour) |
-
-The layer that supplied the starting colour is now visible and a user-supplied `.dcp` selectable:
-the Calibration panel shows it and the picker reads the user's own Adobe Standard / Camera
-Matching files (`docs/camera-profiles.md`, LR-PROF-CAMERAPROFILE); on the user's ILCE-7M4 the
-bundled profile vs an unknown body differs by mean ΔE76 6.42, and choosing `Camera ST` moves the
-render by mean ΔE76 10.8 (DSC04232.ARW). Adobe's exact calibration (1,500 chart-measured
-ColorMatrix sets, the Adobe Color Look family) still needs the user to point LightCraft at their
-`.dcp` files per camera.
 | 2 B | **CR3 beyond four verified bodies** (LR-IMP-FORMATS): `crx.rs` refuses vertical-tile C-RAW, partial-subband and other plane coding, multi-tile 0x200 and adaptive low-frequency gains, and those files fall back to the preview; CR3 sRAW / mRAW and HEIF CR3 too. Verified: M50 / R100 / R8 / R5 Mark II. EOS R7 C-RAW (odd-height QP map) decodes since a45c2b66 and R6 Mark II C-RAW is reported working on 0.6.0, but neither is verified yet (no corpus test or recorded check) | measured: Canon is the largest bucket (33% of photographers) and its share whose camera fully works is the lowest of the big four, 73%; 18 of 22 popular Canon bodies write CR3, 4 verified (raw-parity.md); R7 rule checked only on paired RAW / C-RAW captures ([cr3.md](cr3.md)) | +6.2 points of photographers whose camera works, the biggest single raw gain | 25–45 | [raw-parity](raw-parity.md#remaining-work-ranked-by-photographers-unlocked-per-hour) |
 | 3 B | **Render fidelity unmeasured** (LR-BEHAV-RENDER-FIDELITY): tone, highlights, texture / clarity / dehaze, NR and sharpening are tuned by eye | no side-by-side suite; a retune needs a new process version (only V1 exists) | edits imported from Lightroom look different; the look "isn't Lightroom's" | 30–60 | [raw-parity](raw-parity.md), [process-versions](process-versions.md) |
 | 4 B | **Original-pixel detail at 100%** (LR-VIEW-ZOOM, P0): Detail, Before/After, Compare and Reference are sharp at 1:1–8:1 (zoom windows, #323). Mask overlays and soft proofing still render the whole frame at the drawn size instead of a window: sharp up to the GPU texture side, but a full-size render per edit at 1:1 | checklist row 🟡 | editing with a mask overlay or soft proof on at 1:1 is slow on large files, and blurry past the texture side | 4–8 | [ui-parity](ui-parity.md) |
@@ -87,13 +73,13 @@ Beta-blocking gaps (B) total **~230–430 h**; with the stability and platform w
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-10 (later) | minor | Gap 8: Sony ILCE-7M4 in-file distortion added under the modern convention shared with the ILCE-7RM6 (`arw_lens_modern.rs`, a per-body table); the gap stays open (no lens database), hours unchanged |
 | 2026-10-11 | minor | Reviewed against main after 0.6.0: CR3 entry names the CRX variants `crx.rs` still refuses and the R7 / R6 Mark II C-RAW state (decoding, not verified, so the measured numbers don't move); CI and Windows / Linux entries note the riscv64 release build (#844); R7 fix added to Closed recently. Panel docking (UI.9, #869) closes no listed gap |
 | 2026-10-11 | minor | Camera colour entry: raws with a black-and-white camera JPEG take its tone curve (#577); gap not closed |
 | 2026-10-11 | minor | Gap 4: Compare and Reference views get zoom windows per pane (1:1 was a 2,560 px render magnified); overlays and soft proofing remain, 8–15 h → 4–8 h |
-| 2026-10-10 | minor | Compressed ORF entry links the two Olympus patents that describe the method |
 | 2026-10-11 | minor | Gap 14: `crs:HDREditMode` is read from XMP (#663); the headroom limit and SDR rendition still aren't |
 | 2026-10-11 | minor | Gaps 2 and 10 shrink: EOS R5 Mark II CR3 decodes and is verified (fourth CR3 body, Canon 12 verified, 235 models, ~42% on a verified body); CR3 gain +6.5 → +6.2 points |
+| 2026-10-10 (later) | minor | Gap 8: Sony ILCE-7M4 in-file distortion added under the modern convention shared with the ILCE-7RM6 (`arw_lens_modern.rs`, a per-body table); the gap stays open (no lens database), hours unchanged |
+| 2026-10-10 | minor | Compressed ORF entry links the two Olympus patents that describe the method |
 | 2026-10-10 | minor | RAW gaps re-measured model by model (raw-parity.md): CR3, compressed ORF and verification entries carry measured shares; HE NEF no longer a beta blocker (+1.1 points for 20–40 h); verification entry absorbs the cheap per-body fixes (#769, #702, A200 series) |
 | 2026-10-10 | minor | Beta total raised to 340–600 h to include the ~92 open core-path user issues |
 | 2026-10-10 | major | Created from the checklist's Top gaps (whose items 1–2 had been duplicated by a merge) and ROADMAP's Where we stand; re-ranked; added evidence, impact, hours and beta flags; added platform-CI, lens-database, HE NEF and localization gaps |

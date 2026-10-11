@@ -1748,7 +1748,8 @@ mod tests {
         job.source = SourceRef::File {
             path: "/photos/DSC00001.ARW".into(),
             max_edge: 64,
-            loader: Some(Arc::new(move |_, _| Ok((loaded_pixels.clone(), loaded_info.clone())))),
+            loader: Some(Arc::new(move |_, _, _| Ok((loaded_pixels.clone(), loaded_info.clone())))),
+            lateral_ca: false,
             fallback: None,
             denoise: None,
         };

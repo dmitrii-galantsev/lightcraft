@@ -714,6 +714,25 @@ pub struct EmbeddedLens {
     pub lateral_ca: bool,
 }
 
+impl EmbeddedLens {
+    /// Which corrections the data records, in Lightroom's profile order: `[distortion, vignetting,
+    /// lateral chromatic aberration]`. A `WarpRectilinear2` chain counts as distortion. Lateral CA
+    /// comes from either of its carriers: the file's own CFA table ([`Self::lateral_ca`], the Sony
+    /// convention) or a warp whose per-plane coefficients differ (R and B differ from G — a
+    /// per-plane `OpcodeList3` CA, in the single warp or across a chain's stages).
+    pub fn recorded(&self) -> [bool; 3] {
+        let per_plane = |w: &[[f64; 19]; 3]| w[0] != w[1] || w[1] != w[2];
+        let per_plane_ca = self.warp.is_some_and(|w| w.planes[0] != w.planes[1] || w.planes[1] != w.planes[2])
+            || self.stages.iter().flatten().any(|st| per_plane(&st.planes));
+        [self.warp.is_some() || self.has_stages(), self.vignette.is_some(), self.lateral_ca || per_plane_ca]
+    }
+
+    /// The file records no correction at all.
+    pub fn is_empty(&self) -> bool {
+        self.recorded() == [false; 3]
+    }
+}
+
 /// Most warp stages an [`EmbeddedLens`] chain keeps.
 pub const WARP_STAGES: usize = 3;
 
@@ -735,18 +754,6 @@ impl EmbeddedLens {
     /// Whether a `WarpRectilinear2` chain is set.
     pub fn has_stages(&self) -> bool {
         self.stages.iter().any(Option::is_some)
-    }
-}
-
-impl EmbeddedLens {
-    /// The corrections the file records, in Lightroom's profile order: distortion, vignetting, chromatic aberration.
-    pub fn recorded(&self) -> [bool; 3] {
-        [self.warp.is_some(), self.vignette.is_some(), self.lateral_ca]
-    }
-
-    /// The file records no correction at all.
-    pub fn is_empty(&self) -> bool {
-        self.recorded() == [false; 3]
     }
 }
 

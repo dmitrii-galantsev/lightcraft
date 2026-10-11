@@ -1903,6 +1903,7 @@
   "Finding faces": "正在查找人脸",
   "Synchronizing folder": "正在同步文件夹",
   "Looking for changes": "正在查找更改",
+  "Match this camera": "匹配此相机",
   "This is a Lightroom catalog, not a LightCraft library. Import it into a LightCraft library instead?": "这是 Lightroom 目录，不是 LightCraft 图库。要改为将其导入 LightCraft 图库吗？",
   "The import reads the catalog without changing it and adds its photos, edits, keywords and collections to the library open now.": "导入只读取目录、不做任何更改，并将其中的照片、编辑、关键字和收藏夹添加到当前打开的图库。",
   "Albums hold library photos: Add to My Photos first": "相册只能收录图库中的照片：请先添加到我的照片",

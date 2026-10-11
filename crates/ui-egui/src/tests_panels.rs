@@ -2149,7 +2149,7 @@ fn right_click_add_to_album_offers_a_new_album_when_there_is_none() {
 fn the_optics_section_names_the_lens_and_its_corrections() {
     let mut h = demo([1400.0, 1200.0], json!({"view": "detail", "right": "edit"}));
     let id = h.app.session.active().expect("active photo");
-    let lens = lightcraft_develop::EmbeddedLens { warp: Some(Default::default()), vignette: None, lateral_ca: true };
+    let lens = lightcraft_develop::EmbeddedLens { warp: Some(Default::default()), vignette: None, lateral_ca: true, stages: Default::default() };
     h.app.session.catalog.apply(lightcraft_catalog::Op::SetEmbeddedLens { id, lens: Some(Box::new(lens)) }).unwrap();
     let meta = lightcraft_catalog::Meta { lens: "E 35-150mm F2.0-F2.8 A058".into(), ..Default::default() };
     h.app.session.catalog.apply(lightcraft_catalog::Op::SetMeta { id, meta: Box::new(meta) }).unwrap();

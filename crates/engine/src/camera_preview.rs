@@ -2757,6 +2757,7 @@ mod tests {
             linearized: true,
             opcodes: OpcodeLists::default(),
             metadata: lightcraft_meta::Metadata { make: Some("SONY".into()), model: Some("ILCE-7M4".into()), ..Default::default() },
+            lateral_ca: None,
         };
         assert!(crate::camera_profiles::get("ILCE-7M4").is_some());
         // the camera's rendering: a bright curve on the scene's luminance, as a grey (or tinted) 8-bit sRGB JPEG

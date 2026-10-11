@@ -266,8 +266,8 @@ Beyond decoding:
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-10 (later) | minor | Lens profiles: Sony ILCE-7M4 in-file distortion added under a modern convention shared with the ILCE-7RM6 (`arw_lens_modern.rs`, a per-body table); lens score unchanged (one more body) |
 | 2026-10-11 | minor | EOS R5 Mark II verified (CRX QP-map first literal and limited-length escape, odd-height Bayer planes; 4 CC0 files pinned, QP maps of 33,665 private files): 235 verified, 942 unverified; use-weighted 85% (42% on verified bodies); decoding 77%, RAW readiness unchanged at ~56% |
-| 2026-10-10 | minor | Compressed ORF: pointer to the two Olympus patents that describe the method, as a clean-room starting point |
+| 2026-10-10 (later) | minor | Lens profiles: Sony ILCE-7M4 in-file distortion added under a modern convention shared with the ILCE-7RM6 (`arw_lens_modern.rs`, a per-body table); lens score unchanged (one more body) |
 | 2026-10-10 (later) | major | Model-by-model measurement against Adobe's published list (1,446 models: 234 verified, 943 unverified, 233 preview, 36 unsupported); `docs/raw/` data and re-measure script; use-weighted share 84% (40% on verified bodies); variant matrix; colour and lens sections with scores; ranked next cameras; RAW readiness ~56% from written parts |
+| 2026-10-10 | minor | Compressed ORF: pointer to the two Olympus patents that describe the method, as a clean-room starting point |
 | 2026-10-10 | major | Created: formats, makers, demosaic, colour and lens checklists; target counts from the installed Lightroom 9.6 bundle listing |
