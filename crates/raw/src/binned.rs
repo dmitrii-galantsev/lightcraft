@@ -62,7 +62,8 @@ impl RawImage {
             return Ok(None);
         }
         // Opcode lists 1/2 need the normalised copy; plain files are normalised row by row.
-        let norm: Option<Normalized> = if self.opcodes.list1.is_empty() && self.opcodes.list2.is_empty() { None } else { Some(self.normalized()?) };
+        let norm: Option<Normalized> =
+            if self.opcodes.list1.is_empty() && self.opcodes.list2.is_empty() && self.lateral_ca.is_none() { None } else { Some(self.normalized()?) };
         let cfa = cfa.shifted(a.x, a.y);
         let range = self.white_at(0) - self.black.mean();
         let scale = if range > 0.0 { 1.0 / range } else { 1.0 };
@@ -164,6 +165,7 @@ mod tests {
             wb_multipliers: None,
             linearized: false,
             opcodes: OpcodeLists::default(),
+            lateral_ca: None,
             metadata: Metadata::default(),
         }
     }

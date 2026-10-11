@@ -107,6 +107,7 @@ pub fn write_linear_dng(
         wb_multipliers: None,
         linearized: false,
         opcodes: OpcodeLists::default(),
+        lateral_ca: None,
         metadata: meta,
     };
     let compression = DngCompression::Deflate { tile: 256, half: samples == DngSamples::Half };

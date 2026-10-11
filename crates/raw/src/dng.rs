@@ -319,6 +319,7 @@ pub(crate) fn decode_as(bytes: &[u8], mode: Mode, format: RawFormat) -> Result<R
         wb_multipliers: None,
         linearized,
         opcodes,
+        lateral_ca: None,
         metadata,
     };
     img.validate_for(mode)?;

@@ -252,6 +252,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         wb_multipliers: levels.wb,
         linearized: false,
         opcodes: OpcodeLists::default(),
+        lateral_ca: None,
         metadata,
     };
     image.validate_for(mode)?;

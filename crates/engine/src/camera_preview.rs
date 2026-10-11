@@ -1354,6 +1354,7 @@ mod tests {
             wb_multipliers: Some([1.0; 3]),
             linearized: true,
             opcodes: OpcodeLists::default(),
+            lateral_ca: None,
             metadata: lightcraft_meta::Metadata::default(),
         };
         let proxy = sensor_proxy(&raw, 2, 384).unwrap();
@@ -1697,6 +1698,7 @@ mod tests {
             wb_multipliers: Some([2.0, 1.0, 1.5]),
             linearized: false,
             opcodes: Default::default(),
+            lateral_ca: None,
             metadata: lightcraft_raw::Metadata { make: Some(make.to_owned()), model: Some(model.to_owned()), ..Default::default() },
         }
     }

@@ -500,6 +500,7 @@ pub(crate) fn synthetic_dng_of(w: usize, h: usize, cfa: &str, data: Vec<u16>, xm
         wb_multipliers: None,
         linearized: false,
         opcodes: OpcodeLists::default(),
+        lateral_ca: None,
         metadata,
     };
     write_dng(&raw, &DngWriteOptions { xmp: xmp.map(str::to_string), ..Default::default() }).unwrap()

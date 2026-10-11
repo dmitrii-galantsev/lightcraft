@@ -136,6 +136,7 @@ mod tests {
             wb_multipliers: None,
             linearized: false,
             opcodes: OpcodeLists::default(),
+            lateral_ca: None,
             metadata: Metadata::default(),
         }
     }

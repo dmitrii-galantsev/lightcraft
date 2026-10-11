@@ -399,6 +399,9 @@ pub struct RawInfo {
     pub color: ColorData,
     pub wb_multipliers: Option<[f32; 3]>,
     pub opcodes: OpcodeLists,
+    /// The file's own lateral-CA correction, applied to the CFA colour planes before demosaic
+    /// (see [`RawImage::develop`]); `None` when the file records none. Not a DNG opcode list.
+    pub lateral_ca: Option<Opcode>,
     pub metadata: Metadata,
 }
 
@@ -628,6 +631,9 @@ pub struct RawImage {
     /// Whether a `LinearizationTable` was applied to `data`.
     pub linearized: bool,
     pub opcodes: OpcodeLists,
+    /// The file's own lateral-CA correction, applied to the CFA colour planes before demosaic by
+    /// [`Self::normalized`] (see `vendor::arw_lens_modern`); `None` when the file records none.
+    pub lateral_ca: Option<Opcode>,
     pub metadata: Metadata,
 }
 
@@ -659,6 +665,7 @@ impl RawImage {
             color: self.color.clone(),
             wb_multipliers: self.wb_multipliers,
             opcodes: self.opcodes.clone(),
+            lateral_ca: self.lateral_ca.clone(),
             metadata: self.metadata.clone(),
         }
     }
@@ -678,6 +685,7 @@ impl RawImage {
             color: self.color,
             wb_multipliers: self.wb_multipliers,
             opcodes: self.opcodes,
+            lateral_ca: self.lateral_ca,
             metadata: self.metadata,
         }
     }
@@ -717,7 +725,8 @@ impl RawImage {
     }
 
     /// Black-subtract, white-scale and crop to the active area, applying `OpcodeList1` (on raw values) first and
-    /// `OpcodeList2` (on normalised values) after. 1.0 = white level.
+    /// `OpcodeList2` (on normalised values) after, then the file's own lateral-CA correction
+    /// ([`Self::lateral_ca`]) on the CFA colour planes. 1.0 = white level.
     pub fn normalized(&self) -> Result<Normalized> {
         self.validate()?;
         let (w, cpp) = (self.width, self.cpp);
@@ -755,7 +764,12 @@ impl RawImage {
         });
         let cfa = self.cfa.as_ref().map(|c| c.shifted(a.x, a.y));
         opcodes::apply_list(&self.opcodes.list2, &mut out, a.width, a.height, cpp, cfa.as_ref(), 1.0);
-        Ok(Normalized { width: a.width, height: a.height, cpp, data: out, cfa })
+        let n = Normalized { width: a.width, height: a.height, cpp, data: out, cfa };
+        // lateral CA last, on the mosaic: red and blue are moved onto green's samples before demosaic
+        Ok(match &self.lateral_ca {
+            Some(op) => opcodes::warp_cfa(&n, op),
+            None => n,
+        })
     }
 
     /// Full "raw → camera RGB" path: normalise, demosaic with `method`, apply `OpcodeList3`, then the default crop.
@@ -835,6 +849,7 @@ mod tests {
             wb_multipliers: None,
             linearized: false,
             opcodes: OpcodeLists::default(),
+            lateral_ca: None,
             metadata: Metadata::default(),
         };
         let direct = raw.develop(Method::Bilinear).unwrap();

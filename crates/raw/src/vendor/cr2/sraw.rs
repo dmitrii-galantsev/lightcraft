@@ -392,6 +392,7 @@ pub(super) fn decode(bytes: &[u8], tiff: &Tiff, raw: &Ifd, mode: Mode) -> Result
         wb_multipliers: Some([1.0; 3]),
         linearized: false,
         opcodes: OpcodeLists::default(),
+        lateral_ca: None,
         metadata,
     };
     img.validate_for(mode)?;

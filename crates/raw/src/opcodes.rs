@@ -12,7 +12,7 @@
 //! Value convention: list 1 runs on raw sample values (16-bit scale), lists 2 and 3 on values normalised to
 //! [0, 1]; table/polynomial/delta opcodes are defined on the normalised range and are rescaled accordingly.
 
-use crate::{Cfa, Rgb32f};
+use crate::{Cfa, Normalized, Rgb32f};
 use serde::{Deserialize, Serialize};
 
 /// Rectangular area + plane selection + pitch shared by the "area" opcodes.
@@ -608,6 +608,65 @@ pub fn apply_list3(list: &[Opcode], img: &mut Rgb32f) {
     }
 }
 
+/// A [`Opcode::WarpRectilinear`] applied to a CFA mosaic *before* demosaic: every red and blue site is resampled
+/// from its own colour's samples (its 2 × 2 sublattice), leaving the green sites in place. This is where lateral
+/// chromatic aberration belongs: the red and blue samples still sit on their own sites, so they can be moved onto
+/// green's without the interpolation a demosaiced image has already done. The planes are the R, G and B radial maps
+/// (G is the identity for a CA correction); its source position is read for the site's own colour. Anything that is
+/// not a single-plane Bayer mosaic, or a plane list without all three colours, is returned unchanged.
+pub fn warp_cfa(n: &Normalized, op: &Opcode) -> Normalized {
+    let Opcode::WarpRectilinear { planes, center } = op else { return n.clone() };
+    let (Some(cfa), 1) = (&n.cfa, n.cpp) else { return n.clone() };
+    let (w, h) = (n.width, n.height);
+    if w < 2 || h < 2 || !cfa.is_bayer() || planes.len() < 3 {
+        return n.clone();
+    }
+    let (cx, cy) = (center[0] * (w as f64 - 1.0), center[1] * (h as f64 - 1.0));
+    let m = max_radius(cx, cy, w as f64 - 1.0, h as f64 - 1.0);
+    // the 2 × 2 phase of red and blue (green is the identity and is left alone); None if the pattern is not Bayer
+    let phase = |c: u8| (0..2).flat_map(|j| (0..2).map(move |i| (i, j))).find(|&(i, j)| cfa.color_at(i, j) == c);
+    let (Some((rx, ry)), Some((bx, by))) = (phase(0), phase(2)) else { return n.clone() };
+    let (rx, ry, bx, by) = (rx as isize, ry as isize, bx as isize, by as isize);
+    // the last sublattice index of a phase, so a source position clamps at the active-area edge
+    let last = |p: isize, n: usize| ((n as isize - 1 - p).max(0)) / 2;
+    let (ri, bi) = (last(rx, w), last(bx, w));
+    let (rj, bj) = (last(ry, h), last(by, h));
+    // value of the colour `phase` at (fx, fy) pixel-index coordinates, bilinear over its own samples
+    let sample = |data: &[f32], fx: f64, fy: f64, px: isize, py: isize, imax: isize, jmax: isize| -> f32 {
+        let (u, v) = ((fx - px as f64) / 2.0, (fy - py as f64) / 2.0);
+        let (i0, j0) = (u.floor(), v.floor());
+        let (tx, ty) = ((u - i0) as f32, (v - j0) as f32);
+        let (i0, j0) = (i0 as isize, j0 as isize);
+        let at = |i: isize, j: isize| {
+            let (xi, yj) = (i.clamp(0, imax), j.clamp(0, jmax));
+            data[((py + 2 * yj) * w as isize + px + 2 * xi) as usize]
+        };
+        let top = at(i0, j0) + (at(i0 + 1, j0) - at(i0, j0)) * tx;
+        let bot = at(i0, j0 + 1) + (at(i0 + 1, j0 + 1) - at(i0, j0 + 1)) * tx;
+        top + (bot - top) * ty
+    };
+    let src = &n.data;
+    let mut out = n.data.clone();
+    lightcraft_raster::par_rows(&mut out, w, |y, row| {
+        for (x, v) in row.iter_mut().enumerate() {
+            let c = cfa.color_at(x, y);
+            let (px, py, imax, jmax) = match c {
+                0 => (rx, ry, ri, rj),
+                2 => (bx, by, bi, bj),
+                _ => continue,
+            };
+            let [kr0, kr1, kr2, kr3, kt0, kt1] = planes[c as usize];
+            let (dx, dy) = ((x as f64 - cx) / m, (y as f64 - cy) / m);
+            let r2 = dx * dx + dy * dy;
+            let f = kr0 + r2 * (kr1 + r2 * (kr2 + r2 * kr3));
+            let sx = dx * f + kt0 * 2.0 * dx * dy + kt1 * (r2 + 2.0 * dx * dx);
+            let sy = dy * f + kt1 * 2.0 * dx * dy + kt0 * (r2 + 2.0 * dy * dy);
+            *v = sample(src, cx + m * sx, cy + m * sy, px, py, imax, jmax);
+        }
+    });
+    Normalized { width: n.width, height: n.height, cpp: n.cpp, data: out, cfa: n.cfa.clone() }
+}
+
 /// DNG `WarpRectilinear`: for each output pixel, the source position is the radial + tangential model around the
 /// optical centre, with coordinates normalised by the distance to the farthest corner.
 pub fn warp_rectilinear(img: &Rgb32f, planes: &[[f64; 6]], center: [f64; 2]) -> Rgb32f {
@@ -1031,5 +1090,48 @@ pub(crate) mod tests {
         // a refused (Unknown) opcode 14 triggers no skip
         let bad = Opcode::Unknown { id: 14, flags: 1, params: vec![] };
         assert!(applied_ops(&[bad, wr]).any(|o| matches!(o, Opcode::WarpRectilinear { .. })));
+    }
+
+    /// `warp_cfa` resamples each colour on its own samples: the identity plane is exact, green never moves, and a
+    /// red plane that magnifies moves red sites outward. The mosaic encodes the sublattice x index in red and blue
+    /// (so bilinear over the sublattice is exact) and a constant in green.
+    #[test]
+    fn cfa_warp_moves_red_and_blue_only() {
+        use crate::demosaic::mosaic_from_rgb;
+        let (w, h) = (32usize, 24usize);
+        let cfa = Cfa::bayer("RGGB").unwrap();
+        let img = Rgb32f::from_fn(w, h, |x, y| match cfa.color_at(x, y) {
+            0 => [x as f32, 1.0, 0.0],
+            2 => [0.0, 1.0, x as f32],
+            _ => [0.5, 0.5, 0.5],
+        });
+        let n = mosaic_from_rgb(&img, &cfa);
+        let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let id = Opcode::WarpRectilinear { planes: vec![identity; 3], center: [0.5, 0.5] };
+        assert_eq!(warp_cfa(&n, &id).data, n.data, "the identity warp changes nothing");
+        let op = Opcode::WarpRectilinear { planes: vec![[1.02, 0.0, 0.0, 0.0, 0.0, 0.0], identity, identity], center: [0.5, 0.5] };
+        let out = warp_cfa(&n, &op);
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                match cfa.color_at(x, y) {
+                    // green is the identity plane: its samples are untouched, bit for bit
+                    1 => assert_eq!(out.data[i], n.data[i], "green ({x},{y})"),
+                    0 => {
+                        if (2..=w / 2 - 2).contains(&x) {
+                            assert!(out.data[i] < n.data[i], "red ({x},{y}) moves inward: {} → {}", n.data[i], out.data[i]);
+                        } else if (w / 2 + 2..=w - 4).contains(&x) {
+                            assert!(out.data[i] > n.data[i], "red ({x},{y}) moves outward: {} → {}", n.data[i], out.data[i]);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // a non-Bayer or multi-plane input is returned unchanged
+        let grey = Normalized { width: 4, height: 4, cpp: 1, data: vec![0.3; 16], cfa: None };
+        assert_eq!(warp_cfa(&grey, &op).data, grey.data);
+        let one_plane = Opcode::WarpRectilinear { planes: vec![identity], center: [0.5, 0.5] };
+        assert_eq!(warp_cfa(&n, &one_plane).data, n.data);
     }
 }

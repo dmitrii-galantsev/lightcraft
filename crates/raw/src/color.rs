@@ -288,6 +288,7 @@ mod tests {
             wb_multipliers: None,
             linearized: false,
             opcodes: Default::default(),
+            lateral_ca: None,
             metadata: Default::default(),
         }
     }

@@ -21,11 +21,13 @@ older one misses the ILCE-7RM6's FE 24–70 GM II by up to 1.43 px), so they sta
 table lengths do **not** establish the scale, interpolation or crop normalisation on an unmeasured body, so each body
 is listed individually: a new body is a row, added after the same measurement.
 
-This adds **distortion only**. The vignetting and lateral-CA tables are parsed but not applied (below). Linear YCbCr
-ARWs (a Sony downsized lossless L/M/S) and non-3:2 camera crops are excluded pending validation; the decoder does not
-guess an aspect crop's radial normalisation. The camera's in-camera Distortion Off setting does not erase the table.
-Newly imported photos use LightCraft's existing embedded-profile default (enabled); the profile control can disable or
-scale it.
+This adds **distortion and lateral chromatic aberration**. The lateral-CA table is applied to the raw CFA colour planes
+before demosaic (the raw crate's `warp_cfa`, built from the table by `ca_opcode`), not as a post-demosaic
+`WarpRectilinear` (applied there it made the render's fringing worse; PR #824). The vignetting table is parsed but not
+applied (below). Linear YCbCr ARWs (a Sony downsized lossless L/M/S) and non-3:2 camera crops are excluded pending
+validation; the decoder does not guess an aspect crop's radial normalisation. The camera's in-camera Distortion Off
+setting does not erase the table. Newly imported photos use LightCraft's existing embedded-profile default (enabled);
+the profile control can disable or scale the distortion.
 
 ## Modern convention: the ILCE-7M4 (A7 IV) measurement
 
@@ -59,10 +61,44 @@ file agree to 0.05 px, so either is a valid corrected reference; the numbers abo
 project does. The camera setting was Auto (correction on) and the Off JPEG case (which cannot certify an On warp) was
 not needed: the corrected render reproduces the camera's.
 
-The ILCE-7RM6 uses the identical convention (unit 15000, the same fitting and frame-filling zoom); its numbers and
-tests are in PR #824 and are carried by the shared implementation. Only distortion is emitted: the lateral-CA planes
-are off (below). A body's knot counts are listed in the same table, so the ILCE-7M4's 16-knot full-frame layout is
-the one enabled — a table with another knot count is left uncorrected until it is measured too.
+The ILCE-7RM6 uses the identical convention (unit 15000, the same fitting and frame-filling zoom); its distortion
+numbers and tests are in PR #824 and are carried by the shared implementation. The lateral-CA table is applied to the
+CFA before demosaic for both bodies (see the lateral-CA section below). A body's knot counts are listed in the same
+table, so the ILCE-7M4's 16-knot full-frame layout is the one enabled — a table with another knot count is left
+uncorrected until it is measured too.
+
+## Lateral chromatic aberration
+
+Sony's CA table (raw IFD `0x7035`) holds red's knots then blue's; red's (blue's) source radius is
+`g · (1 + c(g) / U)` with `g` the green source radius. LightCraft applies it to the **raw CFA colour planes before
+demosaic** (`crates/raw/src/vendor/arw_lens_modern.rs`, `crates/raw/src/opcodes.rs::warp_cfa`): the red and blue samples
+are resampled onto green's sites while they still sit on their own, then the demosaic interpolates the corrected
+colour difference. Applying the same planes after demosaic made the render's fringing worse (PR #824: 0.032 → 0.052 px
+rms at 1440), because the demosaic has already attenuated about 70 % of the measured misregistration, so the warp
+over-corrects it.
+
+The unit `U` was **refit here** against the ILCE-7M4 camera JPEGs. The render (embedded distortion applied, the
+project's `estimate_lateral_ca` as the metric) was measured with the correction off and on at a sweep of units. The
+corner R/G and B/G CA falls monotonically as the unit shrinks and crosses zero at a best unit of 1.4–2.4·10⁶ across
+the frames and colours (median 1.6·10⁶), so `U = 1.6·10⁶`. At that unit the coloured fringing of the corrected render
+is a small fraction of the uncorrected render's; PR #824's raw-CFA value (3.36·10⁶) sits above the measured range and
+under-corrects by about 2×. The unit is a single number for both bodies (as their convention shares everything else);
+it scatters by about ±40 % across lenses, so residual fringing remains.
+
+Four ILCE-7M4 frames on three lenses were used, the corner R/G and B/G CA in px at a 1440 px render:
+
+| Frame (lens) | off R/G, B/G | on (1.6·10⁶) R/G, B/G | camera JPEG R/G, B/G |
+|---|---:|---:|---:|
+| DSC03836 (Tamron 35–150 @92) | −0.26, +0.26 | −0.02, +0.17 | +0.01, −0.00 |
+| DSC04440 (Sigma 70 macro) | +0.03, +0.10 | +0.02, +0.05 | −0.02, +0.03 |
+| DSC06980 (Tamron 35–150 @83) | −0.27, +0.33 | +0.05, −0.05 | +0.12, −0.05 |
+| DSC02559 (Tamron 35–150 @35) | −0.02, +0.24 | −0.01, −0.15 | −0.01, −0.01 |
+
+Eight of the ten channel-frames move toward the camera JPEG; DSC04589's R/G is the exception (off −0.20, on −0.23), but the
+camera JPEG itself measures −0.14 R/G there, so the render's R/G is largely scene colour rather than lens CA and the
+estimator's scale is confounded. The distortion warp's registration residual against the camera JPEG is unchanged by the
+CA correction (for DSC03836, 0.40 px median off and 0.44 px on with the harness's coarse block matcher), as it should be:
+CA is a colour-plane misregistration, not geometry.
 
 ## Older convention: ILCE-7RM4A (Imaging Edge)
 

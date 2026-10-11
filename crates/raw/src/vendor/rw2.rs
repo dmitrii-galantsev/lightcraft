@@ -623,6 +623,7 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         wb_multipliers: wb,
         linearized: false,
         opcodes: OpcodeLists { list3: distortion(ifd0, active).into_iter().collect(), ..Default::default() },
+        lateral_ca: None,
         metadata,
     };
     img.validate_for(mode)?;

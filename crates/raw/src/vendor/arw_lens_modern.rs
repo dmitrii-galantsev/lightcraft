@@ -35,14 +35,16 @@
 //!   0.049 px for the full-frame 16–35 mm example in the tests.
 //! - vignetting: read but never applied. The camera JPEGs keep the uncorrected render's radial falloff (median
 //!   corner/centre ratio 0.996 over 39 photos) and no radial gain model fits the tables.
-//! - lateral CA: red's (blue's) source radius is `g · (1 + c(g) / 3.36·10⁶)` with `g` the green source radius and `c`
-//!   the red (blue) half on the same knots. The unit is **provisional**: the measurement is borderline (0.399 px
-//!   worst against a 0.3 px budget; per-photo best units scatter from 1.5·10⁶ to 7.2·10⁶, about ±30 % scene bias),
-//!   but it cuts the rms raw-CFA CA over 46 photos from 0.079 to 0.052 px. The table is parsed and [`warp_opcode`]
-//!   converts it to the warp's R and B planes, but they are **not emitted by default**: [`lens_opcodes`] passes
-//!   `lateral_ca: false`, because applied after demosaic they made the render's CA worse (numbers there). To turn
-//!   them on in code, pass `true` there. When on, a CA value beyond [`CA_MAX_RELATIVE`] or a colour plane that fails
-//!   the fit gate above drops both colour planes, and G alone is applied to all three channels.
+//! - lateral CA: red's (blue's) source radius is `g · (1 + c(g) / 1.6·10⁶)` with `g` the green source radius and `c`
+//!   the red (blue) half on the same knots. The unit was refit here against the ILCE-7M4 camera JPEGs: on the corner
+//!   fringing of the referenced render, turning the correction on with it removes most of the R/G and B/G CA, and the
+//!   best unit scatters 1.4–2.4·10⁶ (median 1.6·10⁶); PR #824's raw-CFA value (3.36·10⁶) under-corrects by about 2×.
+//!   The table is parsed and [`warp_opcode`] converts it to the warp's R and B planes for a DNG, but LightCraft does
+//!   **not** apply it there: applied after demosaic those planes made the render's CA worse (numbers under
+//!   [`lens_opcodes`]). Instead [`ca_opcode`] builds the same table as a red/blue-relative warp over the *raw* radius
+//!   and [`crate::opcodes::warp_cfa`] applies it to the CFA colour planes before demosaic, where the red and blue
+//!   samples still sit on their own sites. A CA value beyond [`CA_MAX_RELATIVE`] or a colour plane that fails the fit
+//!   gate drops the whole correction.
 //!
 //! The correction is produced whatever the in-camera flag says. Only bodies listed in [`BODIES`] get it: the unit and
 //! the knot spacing are verified per body. Another body is added by repeating the measurement on its photos shot with
@@ -85,11 +87,13 @@ fn body(model: &str) -> Option<&'static Body> {
 }
 /// The distortion table's value of 1 (relative radius); a global least-squares fit over the 34 photos gives 15000.7.
 const DISTORTION_UNIT: f64 = 15000.0;
-/// The CA table's value of 1 (relative to the green source radius). Provisional: the median best unit of the 20
-/// cleanest photos; per-photo units scatter from 1.5·10⁶ to 7.2·10⁶ (the measurement's scene bias is about ±30 %).
-const CA_UNIT: f64 = 3.36e6;
+/// The CA table's value of 1 (relative to the green source radius), refit here against the ILCE-7M4 camera JPEGs (the
+/// referenced render's corner fringing; see `docs/sony-lens-corrections.md`). The PR #824 value (3.36·10⁶, measured on
+/// the ILCE-7RM6's raw CFA) sits above the range those frames measure and under-corrects the render's corner R/G and
+/// B/G CA by about 2×; the best unit here scatters 1.4–2.4·10⁶ (median 1.6·10⁶).
+const CA_UNIT: f64 = 1.6e6;
 /// Largest plausible CA value relative to the green source radius (|c| / [`CA_UNIT`]): about 12 px at the full-frame
-/// corner; the largest value in the 54 measured photos' tables is 1724 (FE 24–70 mm), 1724 / 3.36·10⁶ ≈ 5.1·10⁻⁴.
+/// corner; the largest value in the 54 measured photos' tables is 1724 (FE 24–70 mm), 1724 / 1.6·10⁶ ≈ 1.1·10⁻³.
 /// A table beyond it is refused.
 const CA_MAX_RELATIVE: f64 = 2e-3;
 /// Crop border radii scanned by the frame-filling zoom.
@@ -223,11 +227,11 @@ pub(crate) fn warp_opcode(t: &LensTables, knot_spacing: f64, active: Rect, crop:
 /// The `OpcodeList3` lens corrections of a Sony raw IFD for the body `model` (Exif `Model`); empty for a body whose
 /// tables are not verified.
 ///
-/// Distortion only: the lateral CA planes are off (`lateral_ca: false`). Our demosaic already hides about 70 % of the
-/// lens CA (the render shows 0.29 × the CA measured on the raw CFA), while the warp, which runs after demosaic, moves
-/// R and B by 0.84 × the table. Over the 43 verified photos with enough corner detail, the render's corner R/G and B/G
-/// CA went from rms 0.032 / max 0.125 px (off) to 0.052 / 0.219 px (on) at a 1440 px long edge; only the 16–35 mm
-/// improved. Follow-up: warp the CFA colour planes before demosaic, then turn the planes on here.
+/// Distortion only (the G plane): lateral CA is [`ca_opcode`], applied to the CFA before demosaic instead. The warp
+/// here runs after demosaic, where demosaicing has already hidden about 70 % of the lens CA (the render shows 0.29 ×
+/// the CA measured on the raw CFA) while the warp moves R and B by 0.84 × the table: over the 43 photos with enough
+/// corner detail, emitting the CA planes here took the render's corner R/G and B/G CA from rms 0.032 / max 0.125 px
+/// (off) to 0.052 / 0.219 px (on) at a 1440 px long edge, and only the 16–35 mm improved.
 pub(crate) fn lens_opcodes(raw: &Ifd, model: &str, active: Rect, crop: Rect) -> Vec<Opcode> {
     let Some(b) = body(model) else { return Vec::new() };
     let Some(spacing) = knot_spacing(model) else { return Vec::new() };
@@ -237,6 +241,46 @@ pub(crate) fn lens_opcodes(raw: &Ifd, model: &str, active: Rect, crop: Rect) -> 
         return Vec::new();
     }
     warp_opcode(&t, spacing, active, crop, false).into_iter().collect()
+}
+
+/// The body's lateral-CA table as the CFA colour-plane warp that [`crate::opcodes::warp_cfa`] applies *before*
+/// demosaic: red's and blue's radial `WarpRectilinear` planes relative to green (green's plane is the identity), on
+/// the active area `active` centred on the default crop `crop`. Red's (blue's) source radius at destination radius
+/// `r` is `r · (1 + c(r) / [`CA_UNIT`])` with `c` the red (blue) half of the table — the table is indexed at the
+/// green source radius (`r` here), because lateral CA is the lens's own sensor-space magnification difference, a
+/// property of the raw CFA and not of the corrected frame. `None` for a body whose convention is not verified
+/// ([`BODIES`]), when the CA table is absent or a value is implausible ([`CA_MAX_RELATIVE`]), or when either
+/// plane's quartic fit over the radii the crop shows is worse than the fit gate.
+pub(crate) fn ca_opcode(raw: &Ifd, model: &str, active: Rect, crop: Rect) -> Option<Opcode> {
+    let spacing = knot_spacing(model)?;
+    ca_planes(&read_tables(raw), spacing, active, crop)
+}
+
+/// [`ca_opcode`] on already-read tables.
+fn ca_planes(t: &LensTables, knot_spacing: f64, active: Rect, crop: Rect) -> Option<Opcode> {
+    let (red, blue) = t.ca.as_ref()?;
+    let (aw, ah) = (active.width as f64, active.height as f64);
+    if aw < 2.0 || ah < 2.0 || crop.width == 0 || crop.height == 0 {
+        return None;
+    }
+    let (cw, ch) = (crop.width as f64, crop.height as f64);
+    let (cx, cy) = (crop.x as f64 + (cw - 1.0) / 2.0, crop.y as f64 + (ch - 1.0) / 2.0);
+    let m = max_radius(cx, cy, aw - 1.0, ah - 1.0);
+    let max_fit_error = FIT_ERROR_PX_AT_1440 * (cw.max(ch) / 1440.0) / m;
+    let shown = (cw / 2.0).hypot(ch / 2.0) / m;
+    // a NaN fails the comparison: refused too
+    let plausible = |c: &[f64]| c.iter().all(|v| v.abs() <= CA_MAX_RELATIVE * CA_UNIT);
+    if !plausible(red) || !plausible(blue) {
+        return None;
+    }
+    let plane = |c: &[f64]| {
+        let [k0, k1, k2, k3] = fit_radial_warp(&|u| u * (1.0 + interpolate(c, knot_spacing, u * m) / CA_UNIT), max_fit_error, shown)?;
+        Some([k0, k1, k2, k3, 0.0, 0.0])
+    };
+    Some(Opcode::WarpRectilinear {
+        planes: vec![plane(red)?, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], plane(blue)?],
+        center: [cx / (aw - 1.0), cy / (ah - 1.0)],
+    })
 }
 
 #[cfg(test)]
@@ -277,11 +321,11 @@ mod tests {
     /// The G planes of the examples on their ARW6 geometry, and the R and B planes with each file's CA table
     /// (docs/sony-ilce7rm6-lens-corrections.md).
     const FF_G: [f64; 4] = [0.9714495823, 0.022508032, 0.0006090085237, 0.005683284548];
-    const FF_HQ_R: [f64; 4] = [0.9715153129, 0.02236266369, 0.0007060224765, 0.005666341563];
-    const FF_HQ_B: [f64; 4] = [0.97137946, 0.02277016389, 0.0003830082563, 0.005727820598];
+    const FF_HQ_R: [f64; 4] = [0.9715876164975256, 0.022202758545419768, 0.0008127378264317234, 0.005647704278542618];
+    const FF_HQ_B: [f64; 4] = [0.9713023255794672, 0.023058508973172197, 0.00013440796434607962, 0.00577681025234552];
     const APSC_G: [f64; 4] = [1.01627551, -0.0618606692, 0.02768349621, -0.005595798468];
-    const APSC_R: [f64; 4] = [1.016503991, -0.06206460153, 0.0278447625, -0.005644118171];
-    const APSC_B: [f64; 4] = [1.016155702, -0.06162477627, 0.02753315326, -0.005554915901];
+    const APSC_R: [f64; 4] = [1.0167553210154523, -0.06228892710454764, 0.028022155430202787, -0.005697269843348392];
+    const APSC_B: [f64; 4] = [1.016023914058575, -0.061365294058996905, 0.027367776026911886, -0.00550994507898096];
 
     fn knots() -> f64 {
         knot_spacing("ILCE-7RM6").unwrap()
@@ -487,8 +531,8 @@ mod tests {
         odd[0] = 31;
         let mut huge_ifd = vec![i64::MAX / 4; 33];
         huge_ifd[0] = 32;
-        // a constant 32767 (the SShort maximum) fits as well as G does and would shift red ~59 px at the full-res
-        // corner: refused as implausible (bound 2·10⁻³ relative = 6720)
+        // a constant 32767 (the SShort maximum) fits as well as G does and would shift red ~28 px at the full-res
+        // corner: refused as implausible (bound 2·10⁻³ relative = 3200)
         let mut max = vec![32767; 33];
         max[0] = 32;
         for (what, ca) in [("odd count", Value::SShort(odd)), ("huge", Value::SLong8(huge_ifd)), ("constant 32767", Value::SShort(max))] {
@@ -497,7 +541,7 @@ mod tests {
             assert!(matches!(op, Some(Opcode::WarpRectilinear { ref planes, .. }) if planes == &green), "{what}: {op:?}");
         }
         // values up to the bound are kept
-        let mut at_bound = vec![6720; 33];
+        let mut at_bound = vec![3200; 33];
         at_bound[0] = 32;
         let ifd = ifd(vec![(DISTORTION_PARAMS, Value::SShort(FF_DISTORTION.to_vec())), (CA_PARAMS, Value::SShort(at_bound))]);
         let op = warp_opcode(&read_tables(&ifd), knots(), FF_ACTIVE, FF_CROP, true);
@@ -527,9 +571,9 @@ mod tests {
             warp_opcode(&ff, knots(), ff_active, FF_CROP, true),
             [0.488670768629749, 0.4653969582810102],
             &[
-                [0.971770511193381, 0.023073568897462152, 0.00879158563716919, 0.0030468782543633132],
-                [0.9717033132764651, 0.023249297636569695, 0.008638979168841135, 0.003091041831374855],
-                [0.9716312798157171, 0.02356676356656341, 0.00830169937204417, 0.003182927930635947],
+                [0.9718444289020475, 0.02288026728389749, 0.008959452753525485, 0.002998298318920514],
+                [0.9717033132764838, 0.023249297636470764, 0.008638979168983145, 0.0030910418313146253],
+                [0.9715520430090133, 0.023915976088559294, 0.007930691597653732, 0.0032840026385809497],
             ],
         );
         let apsc = read_tables(&sony_lens_ifd(&APSC_LOSSLESS_DISTORTION, &APSC_VIGNETTING, &APSC_LOSSLESS_CA, [0, 2, 1]));
@@ -538,9 +582,9 @@ mod tests {
             warp_opcode(&apsc, knots(), apsc_active, APSC_CROP, true),
             [0.49278737791134486, 0.4743868026915563],
             &[
-                [1.0165959888027158, -0.0690974265041942, 0.036328960724338874, -0.009486844437228997],
-                [1.016366854640611, -0.0688824189782517, 0.03615745253291194, -0.009438825010476538],
-                [1.0162457267369314, -0.0686225599869027, 0.035974238433727206, -0.009384155126102897],
+                [1.016848036381034, -0.06933393478273298, 0.03651761973488345, -0.009539665806630427],
+                [1.016366854640654, -0.06888241897861273, 0.0361574525336676, -0.009438825010926135],
+                [1.0161124860429585, -0.06833671509699642, 0.03577270292577328, -0.009324018253954285],
             ],
         );
     }
@@ -623,5 +667,61 @@ mod tests {
         let ops = lens_opcodes(&ifd, "ILCE-7M4", M4_ACTIVE, M4_CROP);
         let [Opcode::WarpRectilinear { planes, .. }] = ops.as_slice() else { panic!("{ops:?}") };
         assert_eq!(planes.len(), 1, "the CA planes are off by default");
+    }
+
+    /// `ca_opcode` builds the red and blue planes relative to green (green's plane is the identity) on the same
+    /// centre as the distortion warp, and each reproduces `r·(1 + c(r)/CA_UNIT)` within the fit gate.
+    #[test]
+    fn ca_opcode_is_red_and_blue_relative_to_green() {
+        let t = read_tables(&sony_lens_ifd(&FF_DISTORTION, &FF_VIGNETTING, &FF_HQ_CA, [0, 2, 1]));
+        let Some(Opcode::WarpRectilinear { planes, center }) = ca_planes(&t, knots(), FF_ACTIVE, FF_CROP) else {
+            panic!("no CA warp")
+        };
+        assert_eq!(planes.len(), 3);
+        assert_eq!(planes[1], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], "green is the identity");
+        assert!((center[0] - 0.4996005991).abs() < 1e-9 && (center[1] - 0.5).abs() < 1e-9, "the same centre as the distortion warp: {center:?}");
+        let (cx, cy) = (FF_CROP.x as f64 + (FF_CROP.width as f64 - 1.0) / 2.0, FF_CROP.y as f64 + (FF_CROP.height as f64 - 1.0) / 2.0);
+        let m = max_radius(cx, cy, FF_ACTIVE.width as f64 - 1.0, FF_ACTIVE.height as f64 - 1.0);
+        let c = values(&FF_HQ_CA);
+        let (red, blue) = (&c[..16], &c[16..]);
+        let eval = |p: &[f64; 6], u: f64| u * (p[0] + u * u * (p[1] + u * u * (p[2] + u * u * p[3])));
+        for u in [0.2, 0.5, 0.8, 0.95] {
+            let r = u * m;
+            assert!((eval(&planes[0], u) - u * (1.0 + interpolate(red, knots(), r) / CA_UNIT)).abs() < 1e-3, "red at u={u}");
+            assert!((eval(&planes[2], u) - u * (1.0 + interpolate(blue, knots(), r) / CA_UNIT)).abs() < 1e-3, "blue at u={u}");
+        }
+        assert_ne!(planes[0], planes[2], "the table is not symmetric");
+    }
+
+    /// `ca_opcode` returns nothing for an unverified body, an absent table, or an implausible value.
+    #[test]
+    fn ca_opcode_refuses_unverified_or_implausible() {
+        let full = sony_lens_ifd(&FF_DISTORTION, &FF_VIGNETTING, &FF_HQ_CA, [0, 2, 1]);
+        assert!(ca_opcode(&full, "ILCE-7M3", FF_ACTIVE, FF_CROP).is_none(), "unverified body");
+        let no_ca = ifd(vec![(DISTORTION_PARAMS, Value::SShort(FF_DISTORTION.to_vec()))]);
+        assert!(ca_opcode(&no_ca, "ILCE-7RM6", FF_ACTIVE, FF_CROP).is_none(), "no CA table");
+        // the SShort maximum is beyond CA_MAX_RELATIVE (2·10⁻³)
+        let mut max = vec![32767i16; 33];
+        max[0] = 32;
+        let big = ifd(vec![(CA_PARAMS, Value::SShort(max))]);
+        assert!(ca_opcode(&big, "ILCE-7RM6", FF_ACTIVE, FF_CROP).is_none(), "implausible value");
+    }
+
+    /// The ILCE-7M4's CA table becomes a CFA colour-plane warp on that body's geometry: three planes, an identity
+    /// green, and red and blue shifted in opposite directions at the corner (the table's signs).
+    #[test]
+    fn ilce_7m4_ca_becomes_a_cfa_warp() {
+        const CA: [i16; 33] = [
+            32, 0, -128, -128, -256, -256, -384, -384, -384, -384, -384, -512, -512, -512, -384, -384, -256, -128, 0, 128, 128, 128, 128, 256,
+            256, 256, 256, 256, 256, 256, 256, 256, 128,
+        ];
+        let ifd = ifd(vec![(DISTORTION_PARAMS, Value::SShort(M4_DISTORTION.to_vec())), (CA_PARAMS, Value::SShort(CA.to_vec()))]);
+        let Some(Opcode::WarpRectilinear { planes, .. }) = ca_opcode(&ifd, "ILCE-7M4", M4_ACTIVE, M4_CROP) else {
+            panic!("no CA warp")
+        };
+        assert_eq!(planes.len(), 3);
+        assert_eq!(planes[1], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        // the table's first knots are negative (red in) then positive (blue out): the radial factors differ
+        assert!(planes[0][0] < 1.0 && planes[2][0] > 1.0, "red in, blue out: {planes:?}");
     }
 }

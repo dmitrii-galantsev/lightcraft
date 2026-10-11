@@ -715,6 +715,8 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
     let mut metadata = lightcraft_meta::from_tiff(&tiff);
     metadata.width = Some(crop.width as u32);
     metadata.height = Some(crop.height as u32);
+    let geometry = dng_default_crop(raw, w, h).unwrap_or(crop);
+    let active = Rect::new(0, 0, w, h);
     let img = RawImage {
         format: RawFormat::Arw,
         width: w,
@@ -744,8 +746,6 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
             list3: if linear_rgb || crop.height == 0 || (crop.width as f64 / crop.height as f64 - 1.5).abs() > 0.005 {
                 Vec::new()
             } else {
-                let geometry = dng_default_crop(raw, w, h).unwrap_or(crop);
-                let active = Rect::new(0, 0, w, h);
                 super::arw_lens::distortion(&model, raw, active, geometry)
                     .into_iter()
                     .chain(super::arw_lens_modern::lens_opcodes(raw, &model, active, geometry))
@@ -753,6 +753,8 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
             },
             ..Default::default()
         },
+        // lateral CA on the CFA colour planes before demosaic (never an OpcodeList3 plane: see arw_lens_modern)
+        lateral_ca: if linear_rgb { None } else { super::arw_lens_modern::ca_opcode(raw, &model, active, geometry) },
         metadata,
     };
     img.validate_for(mode)?;

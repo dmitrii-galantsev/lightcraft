@@ -25,6 +25,7 @@ fn sample(comp: DngCompression) -> Vec<u8> {
         wb_multipliers: None,
         linearized: false,
         opcodes: OpcodeLists::default(),
+        lateral_ca: None,
         metadata: Default::default(),
     };
     lightcraft_raw::write_dng(&raw, &DngWriteOptions { compression: comp, ..Default::default() }).unwrap()
