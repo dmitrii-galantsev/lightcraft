@@ -6,6 +6,7 @@ mod arw6_curve;
 #[cfg(test)]
 pub(crate) mod arw6_testenc;
 mod arw_lens;
+pub(crate) mod arw_lens_modern;
 pub mod cr2;
 pub mod cr3;
 pub mod crx;
@@ -101,6 +102,73 @@ pub(crate) fn white_from_data(data: &[u16], bits: u32) -> f32 {
     } else {
         full
     }
+}
+
+/// Output radii sampled to fit a radial warp.
+const DISTORTION_SAMPLES: usize = 64;
+
+/// Least-squares `source = u·(k0 + k1u² + k2u⁴ + k3u⁶)` through `source_of_u` sampled at `u = i/64`, i = 0..=64
+/// (`u` = output radius, `WarpRectilinear` units, so the result is directly a plane's `[k0, k1, k2, k3]`). `None` when
+/// a sample is not finite, the normal equations are singular, or the worst fit error at the samples up to the first
+/// one at or beyond `gate_until` (the radii the image shows; 1 = all) exceeds `max_fit_error`.
+pub(crate) fn fit_radial_warp(source_of_u: &dyn Fn(f64) -> f64, max_fit_error: f64, gate_until: f64) -> Option<[f64; 4]> {
+    let samples: Vec<(f64, f64)> = (0..=DISTORTION_SAMPLES)
+        .map(|i| {
+            let u = i as f64 / DISTORTION_SAMPLES as f64;
+            (u, source_of_u(u))
+        })
+        .collect();
+    if samples.iter().any(|&(_, v)| !v.is_finite()) {
+        return None;
+    }
+    let basis = |u: f64| {
+        let u2 = u * u;
+        [u, u * u2, u * u2 * u2, u * u2 * u2 * u2]
+    };
+    let mut a = [[0.0; 4]; 4];
+    let mut rhs = [0.0; 4];
+    for &(u, v) in &samples {
+        let f = basis(u);
+        for (i, fi) in f.iter().enumerate() {
+            for (j, fj) in f.iter().enumerate() {
+                a[i][j] += fi * fj;
+            }
+            rhs[i] += fi * v;
+        }
+    }
+    let k = solve4(a, rhs)?;
+    let fit = |u: f64| basis(u).iter().zip(&k).map(|(f, c)| f * c).sum::<f64>();
+    // rounded up to a sample, so the band between the last sample inside and `gate_until` itself is checked too;
+    // capped at 1 (`min` also turns a NaN into 1: every sample is gated)
+    let n = DISTORTION_SAMPLES as f64;
+    let gate_until = (gate_until * n).ceil().min(n) / n;
+    let worst = samples.iter().filter(|&&(u, _)| u <= gate_until).map(|&(u, v)| (fit(u) - v).abs()).fold(0.0, f64::max);
+    (worst <= max_fit_error).then_some(k)
+}
+
+/// Solve the 4 × 4 system `a·x = b` (Gaussian elimination with partial pivoting); `None` when singular or not finite.
+fn solve4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
+    for c in 0..4 {
+        let p = (c..4).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs()))?;
+        if a[p][c].is_nan() || a[p][c].abs() <= 1e-300 {
+            return None;
+        }
+        a.swap(c, p);
+        b.swap(c, p);
+        for r in c + 1..4 {
+            let f = a[r][c] / a[c][c];
+            for k in c..4 {
+                a[r][k] -= f * a[c][k];
+            }
+            b[r] -= f * b[c];
+        }
+    }
+    let mut x = [0.0; 4];
+    for c in (0..4).rev() {
+        let s: f64 = (c + 1..4).map(|k| a[c][k] * x[k]).sum();
+        x[c] = (b[c] - s) / a[c][c];
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
 }
 
 #[cfg(test)]

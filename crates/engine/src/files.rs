@@ -1929,4 +1929,45 @@ mod tests {
         assert_eq!(s.quick_view_job(id, 1600, true).unwrap().run().quick, Some(QuickSource::Small));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A minimal Sony ARW of `model` whose raw IFD carries the Sony distortion table (`0x7037`), so it decodes to a
+    /// valid CFA image with the body's embedded lens correction (as `crates/raw/src/vendor/arw.rs` lays it out).
+    fn sony_arw(model: &str) -> Vec<u8> {
+        use lightcraft_tiff::tags::{self as t, photometric};
+        use lightcraft_tiff::{ByteOrder, IfdBuilder, ImageData, TiffWriter, Value};
+        let mut raw = IfdBuilder::new();
+        raw.set(t::MAKE, Value::Ascii("SONY".into()));
+        raw.set(t::MODEL, Value::Ascii(model.into()));
+        raw.set(t::IMAGE_WIDTH, Value::Long(vec![32]));
+        raw.set(t::IMAGE_LENGTH, Value::Long(vec![24]));
+        raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![16]));
+        raw.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
+        raw.set(t::PHOTOMETRIC, Value::Short(vec![photometric::CFA]));
+        raw.set(t::COMPRESSION, Value::Short(vec![1]));
+        raw.set(t::WHITE_LEVEL, Value::Long(vec![16383]));
+        raw.set(0x74c7, Value::Long(vec![2, 2]));
+        raw.set(t::DEFAULT_CROP_ORIGIN, Value::Long(vec![2, 2]));
+        raw.set(t::DEFAULT_CROP_SIZE, Value::Long(vec![30, 20]));
+        raw.set(0x74c8, Value::Long(vec![30, 20]));
+        raw.set(0x7037, Value::SShort(vec![16, -4, 0, 11, 27, 49, 75, 110, 149, 198, 253, 318, 392, 476, 571, 681, 807]));
+        raw.set_image(ImageData::Strips { rows_per_strip: 24, strips: vec![vec![0; 32 * 24 * 2]] });
+        TiffWriter { order: ByteOrder::Little, ..Default::default() }.write(&[raw]).unwrap()
+    }
+
+    /// A verified body's raws carry their embedded distortion into `DevelopSettings`' lens slot (the correction on by
+    /// default); an unverified body's tables are not read.
+    #[test]
+    fn sony_arw_lens_data_reaches_embedded_lens() {
+        let of = |model| {
+            let img = lightcraft_raw::decode(&sony_arw(model)).unwrap();
+            super::embedded_lens(&img.info())
+        };
+        let lens = of("ILCE-7M4").expect("ILCE-7M4 warp");
+        assert!(lens.vignette.is_none());
+        let warp = lens.warp.expect("warp");
+        // the single G plane is replicated to R, G and B; the opcode's centre lands on the default crop's centre
+        assert_eq!(warp.planes, [warp.planes[0]; 3]);
+        assert!((warp.center.x - 0.5).abs() < 1e-9 && (warp.center.y - 0.5).abs() < 1e-9, "{:?}", warp.center);
+        assert!(of("ILCE-7M3").is_none(), "unverified body");
+    }
 }

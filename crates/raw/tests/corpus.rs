@@ -973,6 +973,8 @@ fn corpus_raws_keep_their_container_and_are_not_thumbnail_shells() {
 
 /// Matching Sony table dimensions are not evidence of a shared correction model. Exercise the
 /// actual corpus headers and decoded files as well as the synthetic model-boundary unit tests.
+/// The ILCE-7M4 now decodes under the modern convention for its 16-knot full-frame table (the layout measured here);
+/// its 11-knot table is a different, unmeasured layout and stays uncorrected, as does the linear YCbCr lossless M/S.
 #[test]
 fn sony_embedded_distortion_is_limited_to_validated_models() {
     let root = corpus_root().join("raw");
@@ -983,7 +985,7 @@ fn sony_embedded_distortion_is_limited_to_validated_models() {
         ("arw-sony-a7m3-compressed.arw", "ILCE-7M3", 0),
         ("arw-sony-a7m3-uncompressed.arw", "ILCE-7M3", 0),
         ("arw-sony-a7m4-14bit.arw", "ILCE-7M4", 0),
-        ("arw-sony-a7m4-lossless-l.arw", "ILCE-7M4", 0),
+        ("arw-sony-a7m4-lossless-l.arw", "ILCE-7M4", 1),
         ("arw-sony-a7m4-lossless-m.arw", "ILCE-7M4", 0),
         ("arw-sony-a7m4-lossless-s.arw", "ILCE-7M4", 0),
         ("arw-sony-a7rm2-12bit-uncompressed.arw", "ILCE-7RM2", 0),

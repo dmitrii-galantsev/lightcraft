@@ -736,7 +736,8 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
         // The distortion table is centred on the DNG-style default crop when the file has one: on the ILCE-7RM4A
         // it starts at x = 32 where Sony's crop tags (the image crop, unchanged) start at 0, and the warp was
         // validated against Sony's exports with that centre. The opcode's centre is in active-area coordinates, so
-        // it stays on the optical centre whichever crop frames the image.
+        // it stays on the optical centre whichever crop frames the image. The two body tables are disjoint (the
+        // ILCE-7RM4A uses the older convention, the modern bodies another), so at most one produces an opcode.
         opcodes: OpcodeLists {
             // DefaultCrop can retain native geometry while Sony's tags select an aspect crop.
             // Both the image framing and the table geometry must stay within the validated 3:2 scope.
@@ -744,7 +745,11 @@ pub(crate) fn decode(bytes: &[u8], mode: Mode) -> Result<RawImage> {
                 Vec::new()
             } else {
                 let geometry = dng_default_crop(raw, w, h).unwrap_or(crop);
-                super::arw_lens::distortion(&model, raw, Rect::new(0, 0, w, h), geometry).into_iter().collect()
+                let active = Rect::new(0, 0, w, h);
+                super::arw_lens::distortion(&model, raw, active, geometry)
+                    .into_iter()
+                    .chain(super::arw_lens_modern::lens_opcodes(raw, &model, active, geometry))
+                    .collect()
             },
             ..Default::default()
         },
@@ -1386,5 +1391,42 @@ mod tests {
         };
         assert!(is_quad_tiled(&file, &info));
         assert_eq!(read_quad_tiles(&file, &info).unwrap(), mosaic);
+    }
+
+    /// The modern Sony tables reach `OpcodeList3` for a verified body (the ILCE-7M4) in the headers-only probe and the
+    /// full decode, as one plane (lateral CA off by default), and survive a DNG round-trip; an unverified body's tables
+    /// produce nothing.
+    #[test]
+    fn modern_sony_lens_tables_reach_opcode_list3() {
+        use lightcraft_tiff::{ByteOrder, IfdBuilder, ImageData, TiffWriter, Value};
+        let file = |model: &str| {
+            let mut raw = IfdBuilder::new();
+            raw.set(t::MAKE, Value::Ascii("SONY".into()));
+            raw.set(t::MODEL, Value::Ascii(model.into()));
+            raw.set(t::IMAGE_WIDTH, Value::Long(vec![32]));
+            raw.set(t::IMAGE_LENGTH, Value::Long(vec![24]));
+            raw.set(t::BITS_PER_SAMPLE, Value::Short(vec![16]));
+            raw.set(t::SAMPLES_PER_PIXEL, Value::Short(vec![1]));
+            raw.set(t::PHOTOMETRIC, Value::Short(vec![photometric::CFA]));
+            raw.set(t::COMPRESSION, Value::Short(vec![1]));
+            raw.set(t::WHITE_LEVEL, Value::Long(vec![16383]));
+            raw.set(0x74c7, Value::Long(vec![0, 2]));
+            raw.set(t::DEFAULT_CROP_ORIGIN, Value::Long(vec![2, 2]));
+            raw.set(t::DEFAULT_CROP_SIZE, Value::Long(vec![30, 20]));
+            raw.set(0x74c8, Value::Long(vec![30, 20]));
+            raw.set(0x7037, Value::SShort(vec![16, -4, 0, 11, 27, 49, 75, 110, 149, 198, 253, 318, 392, 476, 571, 681, 807]));
+            raw.set_image(ImageData::Strips { rows_per_strip: 24, strips: vec![vec![0; 32 * 24 * 2]] });
+            TiffWriter { order: ByteOrder::Little, ..Default::default() }.write(&[raw]).unwrap()
+        };
+        for mode in [Mode::Header, Mode::Full] {
+            let ops = decode(&file("ILCE-7M4"), mode).unwrap().opcodes.list3;
+            let [crate::Opcode::WarpRectilinear { planes, center }] = ops.as_slice() else { panic!("{mode:?}: {ops:?}") };
+            assert_eq!(planes.len(), 1, "{mode:?}: one plane (lateral CA off)");
+            assert!((center[0] - 16.5 / 31.0).abs() < 1e-9 && (center[1] - 11.5 / 23.0).abs() < 1e-9, "{mode:?}: {center:?}");
+            assert!(decode(&file("ILCE-7M3"), mode).unwrap().opcodes.list3.is_empty(), "{mode:?}: unverified body");
+        }
+        let full = decode(&file("ILCE-7M4"), Mode::Full).unwrap();
+        let dng = crate::write_dng(&full, &Default::default()).unwrap();
+        assert_eq!(crate::decode(&dng).unwrap().opcodes.list3, full.opcodes.list3);
     }
 }

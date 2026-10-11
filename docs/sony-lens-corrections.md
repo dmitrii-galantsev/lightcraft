@@ -1,20 +1,82 @@
-# Sony embedded distortion corrections
+# Sony embedded lens corrections
+
+LightCraft reads the lens-correction tables Sony records in the raw image IFD of every ARW and converts the
+distortion table into `OpcodeList3` / `WarpRectilinear`, so the existing profile-correction control, the CPU/GPU
+optics path, EXIF orientation handling and DNG export use the same correction (the same path as a DNG's embedded warp
+and Panasonic / Leica RW2 distortion). No lens database and no Adobe profile is used: these are the camera's own
+numbers.
+
+Two conventions are implemented, each measured against an independent reference and selected by exact camera model:
+
+| Body | Convention | Reference | Enabled |
+|---|---|---|---|
+| ILCE-7RM4A (A7R IVA) | *older*: unit 16384, the table indexed at the output radius, knots at the crop half diagonal / 15 | Sony Imaging Edge On/Off exports, FE 24–105 and FE 200–600 | yes |
+| ILCE-7M4 (A7 IV) | *modern*: unit 15000, the table indexed at the corrected radius (frame-filling zoom), knots at the full-frame crop half diagonal / 15 | the camera's own JPEG, Tamron 35–150 mm F2–2.8 at 92 mm | yes |
+| ILCE-7RM6 (A7R VI) | *modern*, as the ILCE-7M4 | the camera's own JPEG, 54 photos, three lenses (PR #824) | yes |
+
+`crates/raw/src/vendor/arw_lens_modern.rs` is the modern convention, driven by a per-body table (full-frame default
+crop and the distortion-table knot counts that body was measured with); `crates/raw/src/vendor/arw_lens.rs` is the
+older ILCE-7RM4A convention. The two differ in unit and index and no single unit fits every lens under either (the
+older one misses the ILCE-7RM6's FE 24–70 GM II by up to 1.43 px), so they stay separate. Matching tag numbers and
+table lengths do **not** establish the scale, interpolation or crop normalisation on an unmeasured body, so each body
+is listed individually: a new body is a row, added after the same measurement.
+
+This adds **distortion only**. The vignetting and lateral-CA tables are parsed but not applied (below). Linear YCbCr
+ARWs (a Sony downsized lossless L/M/S) and non-3:2 camera crops are excluded pending validation; the decoder does not
+guess an aspect crop's radial normalisation. The camera's in-camera Distortion Off setting does not erase the table.
+Newly imported photos use LightCraft's existing embedded-profile default (enabled); the profile control can disable or
+scale it.
+
+## Modern convention: the ILCE-7M4 (A7 IV) measurement
+
+The ARW `DSC03836.ARW` (Tamron 35–150 mm F2–2.8, 92 mm, in-camera distortion correction Auto) carries, in the raw
+IFD (ExifTool Sony names, count first):
+
+| Table | Tag | Flag | Values |
+|---|---|---|---|
+| Distortion | `0x7037` | `0x7036` | 16: −4, 0, 11, 27, 49, 75, 110, 149, 198, 253, 318, 392, 476, 571, 681, 807 |
+| Vignetting | `0x7032` | `0x7031` | 16: 0, 0, 32, 80, 160, 256, 368, 496, 656, 832, 1024, 1184, 1504, 2112, 3136, 4288 |
+| Lateral CA | `0x7035` | `0x7034` | 32: red's 16 knots, then blue's 16 |
+
+The meaning is the modern convention: knot `i` sits at sensor radius `i · s` from the default-crop centre, with
+`s = hypot(7008, 4672) / 30` = 280.75 px (the full-frame default crop's half diagonal / 15); a corrected radius `r`
+reads the source radius `S(r) = r · (1 + v(r) / 15000)`, and the camera then zooms (`z = 1.0480` here) so the output
+fills the crop. The warp's centre is the default crop's centre. The quartic `WarpRectilinear` fit deviates from the
+interpolated table by under 0.20 px at a 1440 px long edge, inside the 0.25 px gate.
+
+Method (the project's usual no-chart one). LightCraft's uncorrected render of the ARW (the raw crate's `develop`,
+no opcodes) was matched to the camera's own embedded JPEG (the camera applies its correction to it) with
+normalised-cross-correlation block matching; the displacement field was fitted for the unit, centre and zoom, the
+resulting `WarpRectilinear` was then re-rendered through `OpcodeList3` and re-registered:
+
+| Region (1440 px long edge) | Uncorrected | Corrected |
+|---|---:|---:|
+| Corner (outer 15 % of the radii) | 11.0 px median | 0.26 px median, 0.50 px max |
+| All matched blocks | 14.8 px median | 0.39 px median, 0.62 px 90th |
+
+These are feature residuals, not photometric equality. The camera JPEG and Lightroom Classic's export of the same
+file agree to 0.05 px, so either is a valid corrected reference; the numbers above use the camera's own JPEG, as the
+project does. The camera setting was Auto (correction on) and the Off JPEG case (which cannot certify an On warp) was
+not needed: the corrected render reproduces the camera's.
+
+The ILCE-7RM6 uses the identical convention (unit 15000, the same fitting and frame-filling zoom); its numbers and
+tests are in PR #824 and are carried by the shared implementation. Only distortion is emitted: the lateral-CA planes
+are off (below). A body's knot counts are listed in the same table, so the ILCE-7M4's 16-knot full-frame layout is
+the one enabled — a table with another knot count is left uncorrected until it is measured too.
+
+## Older convention: ILCE-7RM4A (Imaging Edge)
 
 LightCraft reads the signed 16-sample distortion table in the raw image IFD (`0x7037`) of
-Sony **ILCE-7RM4A (A7R IVA)** Bayer ARWs. Other camera models are deliberately left uncorrected,
-even when they contain a table with the same layout.
-It converts that table into `OpcodeList3` / `WarpRectilinear`, so the existing profile correction control,
-CPU/GPU optics path, EXIF orientation handling, and DNG export use the same correction.
+Sony **ILCE-7RM4A (A7R IVA)** Bayer ARWs, and converts it into `OpcodeList3` / `WarpRectilinear`, so the existing
+profile correction control, CPU/GPU optics path, EXIF orientation handling, and DNG export use the same correction.
 
-This adds **distortion only**. Sony vignetting and lateral chromatic-aberration tables are not decoded.
-The enabled and independently validated model is ILCE-7RM4A with the FE 24–105mm F4 G OSS and
-FE 200–600mm F5.6–6.3 G OSS. Linear YCbCr ARWs and non-3:2 camera crops are excluded pending validation. An aspect crop may
-retain the full-frame radial normalization; the decoder does not guess that relationship. Older files that carry
-only encrypted correction metadata, different table lengths, and rejected tables remain uncorrected.
-The camera's distortion Off setting does not erase its table. Newly imported photos use LightCraft's existing
-embedded-profile default (enabled); the profile correction control can disable or adjust it.
+The enabled and independently validated model is ILCE-7RM4A with the FE 24–105mm F4 G OSS and FE 200–600mm F5.6–6.3
+G OSS (unit 16384, the table indexed at the output radius). Linear YCbCr ARWs and non-3:2 camera crops are excluded
+pending validation. An aspect crop may retain the full-frame radial normalization; the decoder does not guess that
+relationship. Older files that carry only encrypted correction metadata, different table lengths, and rejected tables
+remain uncorrected.
 
-## Clean-room evidence
+### Clean-room evidence
 
 The [ExifTool EXIF tag-name documentation](https://exiftool.org/TagNames/EXIF.html) identifies
 `0x7037` as 17 signed 16-bit integers. The first value is the count, 16, followed by radial samples.
@@ -47,7 +109,7 @@ pixels left of Sony's exports (eight pixels in a 2376-pixel-wide export).
 The main raw-IFD table is important: the similarly named MakerNote table has different values and
 must not be substituted into this formula. Main raw-IFD and SR2SubIFD values agreed in the test files.
 
-## Validation
+### Validation
 
 At 2376×1584, independent SIFT correspondences between Sony distortion On and Off TIFF exports gave:
 
@@ -92,12 +154,14 @@ Tests cover signedness/length rejection, zero and malformed tables, independent 
 geometry, barrel framing, offset crop normalization, both TIFF byte orders, header/full consistency,
 and preservation through DNG export. No private photographs or reference TIFFs are committed.
 
-## Camera coverage and regression boundary
+### Camera coverage and regression boundary (both conventions)
 
-The model check is exact: `ILCE-7RM4` (A7R IV without the A suffix), `ILCE-7M3`, unknown/missing
-model names, and every other model remain unsupported by this distortion decoder. Matching tag
-numbers and table lengths do not establish the scale, interpolation or crop normalization on another
-body. Support can expand after independent geometry validation; do not add model-name prefix matching.
+The older decoder's model check is exact: `ILCE-7RM4` (A7R IV without the A suffix), `ILCE-7M3`, unknown/missing
+model names, and every other model remain unsupported by it. The modern convention is likewise keyed by exact model
+([`BODIES`] in `arw_lens_modern.rs`): `ILCE-7M4` and `ILCE-7RM6`, each only for the knot counts it was measured
+with; every other model and layout stays uncorrected. Matching tag numbers and table lengths do not establish the
+scale, interpolation or crop normalization on another body. Support can expand after independent geometry
+validation; do not add model-name prefix matching.
 
 The current `cargo xtask corpus --download` manifest contains 23 Sony CC0 samples across 17 bodies,
 including samples 4822 (A7R IVA / 24–105 mm) and 3989 (A9 II / 200–600 mm). All 23 files have
@@ -108,7 +172,7 @@ pinned SHA-256 hashes and are checked with `sony_embedded_distortion_is_limited_
 | ILCE-7RM4A | Compressed (4822) | 16 samples | One distortion warp |
 | ILCE-9M2 | Compressed (3989) | 16 samples | None |
 | ILCE-7M3 | Compressed, uncompressed | 16 samples | None |
-| ILCE-7M4 | 14-bit, lossless L/M/S | 11 samples in the 14-bit file; 16 in L/M/S | None |
+| ILCE-7M4 | 14-bit, lossless L/M/S | 11 samples in the 14-bit file; 16 in L/M/S | One warp for the 16-knot full-frame files (lossless L); the 11-knot table stays uncorrected |
 | ILCE-7RM2 | 12-bit uncompressed | 16 samples | None |
 | DSC-RX100 | One | No raw-IFD table | None |
 | DSC-RX100M3 | One | 11 samples | None |
