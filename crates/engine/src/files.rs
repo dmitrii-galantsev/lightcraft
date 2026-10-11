@@ -344,26 +344,28 @@ pub fn bin_factor(raw: &lightcraft_raw::RawImage, max_edge: usize) -> Option<usi
     [8usize, 6, 4, 3, 2].into_iter().find(|&k| raw.can_bin(k) && (long / k >= need || (k == 3 && !raw.can_bin(2) && long / k >= need3)))
 }
 
-/// Decode a file into a linear Rec.2020 image no larger than `max_edge`, oriented.
+/// Decode a file into a linear Rec.2020 image no larger than `max_edge`, oriented. `lateral_ca` is the render's
+/// "Remove Chromatic Aberration" choice: for a raw whose file records a lateral-CA table, whether to develop it
+/// onto the CFA before demosaic (see [`crate::media::FileLoader`]).
 ///
 /// Runs on a rayon worker: its many short parallel loops then start on the worker's own queue
 /// instead of each one waking the pool from outside and waiting for it (which costs more than the
 /// loops themselves when the machine is busy).
-pub fn load_bytes(bytes: &[u8], max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
-    rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None).map(|(img, _, info)| (img, info)))
+pub fn load_bytes(bytes: &[u8], max_edge: usize, lateral_ca: bool) -> Result<(Rgb32f, SourceInfo), String> {
+    rayon::scope(|_| load_bytes_now(std::borrow::Cow::Borrowed(bytes), max_edge, None, lateral_ca).map(|(img, _, info)| (img, info)))
 }
 
 /// [`load_bytes`] taking the file's bytes: a raw file's bytes are freed as soon as it is decoded
 /// (less memory held while it is developed).
-pub fn load_vec(bytes: Vec<u8>, max_edge: usize) -> Result<(Rgb32f, SourceInfo), String> {
-    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None).map(|(img, _, info)| (img, info)))
+pub fn load_vec(bytes: Vec<u8>, max_edge: usize, lateral_ca: bool) -> Result<(Rgb32f, SourceInfo), String> {
+    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, None, lateral_ca).map(|(img, _, info)| (img, info)))
 }
 
 /// [`load_vec`] that also develops the photo's cached denoised picture (`spec`) from the same decode: the plain
 /// picture, the denoised one (`None` when it cannot be read or does not fit this raw: the plain one is then all
 /// there is) and the source facts. Both pictures are the same size.
-pub fn load_vec_pair(bytes: Vec<u8>, max_edge: usize, spec: &DenoiseSpec) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> {
-    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, Some(spec)))
+pub fn load_vec_pair(bytes: Vec<u8>, max_edge: usize, lateral_ca: bool, spec: &DenoiseSpec) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> {
+    rayon::scope(move |_| load_bytes_now(std::borrow::Cow::Owned(bytes), max_edge, Some(spec), lateral_ca))
 }
 
 /// The denoised camera RGB of `raw` from its cached product, as the plain development would have it: the default
@@ -392,6 +394,7 @@ fn load_bytes_now(
     bytes: std::borrow::Cow<'_, [u8]>,
     max_edge: usize,
     denoise: Option<&DenoiseSpec>,
+    lateral_ca: bool,
 ) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> {
     if lightcraft_raw::probe(&bytes).is_some() {
         let mut raw = match lightcraft_raw::decode(&bytes).map_err(|e| preview_reason(&bytes, e)) {
@@ -404,8 +407,10 @@ fn load_bytes_now(
             }
             Err(Err(e)) => return Err(e),
         };
-        // Embedded lens corrections are applied by the pipeline ("Enable Profile Corrections"), not baked in
-        // (removed before the camera look's binned sensor proxy too, which needs an empty `OpcodeList3`).
+        // The embedded distortion/vignetting warp is applied by the pipeline ("Enable Profile Corrections"),
+        // not baked in (removed before the camera look's binned sensor proxy too, which needs an empty
+        // `OpcodeList3`). The lateral-CA table is different: `lateral_ca` below applies it to the CFA before
+        // demosaic (where it belongs), gated by the "Remove Chromatic Aberration" choice.
         let info = raw.info();
         let lens = crate::lens_profiles::for_raw(&info, || lightcraft_meta::extract(&bytes));
         raw.opcodes.list3.retain(|op| !op.is_lens_correction());
@@ -421,7 +426,7 @@ fn load_bytes_now(
         let bin = bin_factor(&raw, max_edge);
         // (binned: block means, and which colours had a clipped sample in each block)
         let binned = match bin {
-            Some(k) => raw.develop_binned_masked(k, HIGHLIGHT_CLIP).map_err(|e| e.to_string())?,
+            Some(k) => raw.develop_binned_masked_ca(k, HIGHLIGHT_CLIP, lateral_ca).map_err(|e| e.to_string())?,
             None => None,
         };
         let factor = if binned.is_some() { bin.unwrap_or(1) } else { 1 };
@@ -429,7 +434,7 @@ fn load_bytes_now(
             Some((img, mask)) => (img, Some(mask)),
             None => {
                 let method = if max_edge <= 600 { lightcraft_raw::Method::Bilinear } else { lightcraft_raw::Method::Ahd };
-                (raw.develop(method).map_err(|e| e.to_string())?, None)
+                (raw.develop_ca(method, lateral_ca).map_err(|e| e.to_string())?, None)
             }
         };
         // the same development from the denoised mosaic, when the photo has been denoised
@@ -497,6 +502,7 @@ fn load_bytes_now(
                 as_shot_temp: temp,
                 as_shot_tint: tint,
                 lens,
+                raw_lens_ca: lateral_ca && info.lateral_ca.is_some(),
                 relative_wb: scale.relative,
                 legacy_relative_wb: scale.legacy_relative,
                 camera_color,
@@ -831,13 +837,13 @@ fn quick_image_srgb(header: &[u8], window: &[u8], max_edge: usize) -> Option<lig
 /// The filesystem-backed [`PairLoader`]: the file is read and decoded once, and developed as usual and from the photo's
 /// denoised picture. It holds two pictures at once, so it counts for more at the memory gate than a plain load.
 pub fn fs_pair_loader() -> PairLoader {
-    Arc::new(|path: &str, max_edge: usize, spec: &DenoiseSpec| {
+    Arc::new(|path: &str, max_edge: usize, lateral_ca: bool, spec: &DenoiseSpec| {
         let len = std::fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0);
         let weight = len * if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 4 } else { 10 };
         let gate = crate::memory::work_gate();
         let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        let r = load_vec_pair(bytes, max_edge, spec);
+        let r = load_vec_pair(bytes, max_edge, lateral_ca, spec);
         crate::memory::release();
         r
     })
@@ -851,13 +857,13 @@ pub fn fs_pair_loader() -> PairLoader {
 /// interactive loads (the loupe, exports) never wait — they are counted, so background work
 /// yields to them.
 pub fn fs_hooks() -> (FileLoader, FileProbe) {
-    let loader: FileLoader = Arc::new(|path: &str, max_edge: usize| {
+    let loader: FileLoader = Arc::new(|path: &str, max_edge: usize, lateral_ca: bool| {
         let len = std::fs::metadata(path).map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX)).unwrap_or(0);
         let weight = len * if max_edge <= crate::media::SourceLevel::Thumb.max_edge() { 3 } else { 6 };
         let gate = crate::memory::work_gate();
         let _permit = if crate::memory::is_background() { gate.acquire(weight) } else { gate.acquire_urgent(weight) };
         let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
-        let r = load_vec(bytes, max_edge);
+        let r = load_vec(bytes, max_edge, lateral_ca);
         // the file, the samples and the intermediate images are gone: give their pages back
         crate::memory::release();
         r
@@ -1051,7 +1057,7 @@ mod tests {
         let bytes = crate::tests_xmp::synthetic_dng_of(w, h, "RGGB", data, None, Default::default());
         let raw = lightcraft_raw::decode(&bytes).unwrap();
         assert_eq!(bin_factor(&raw, 32), Some(8));
-        let (img, _) = load_bytes(&bytes, 32).unwrap();
+        let (img, _) = load_bytes(&bytes, 32, true).unwrap();
         assert_eq!((img.width, img.height), (32, 24));
         let worst = img.data.iter().map(|p| p[1] / ((p[0] + p[2]) / 2.0).max(1e-6)).fold(0.0f32, f32::max);
         assert!(worst < 1.12, "green speckles: green {worst:.2}× the other channels");
@@ -1077,8 +1083,8 @@ mod tests {
         let path = dir.join("same.lcdn");
         product::write(&path, &camera_rgb, key).unwrap();
         let spec = DenoiseSpec { product: path, key: key.into(), make: None };
-        let (ordinary, _) = load_bytes(&bytes, 2048).unwrap();
-        let (plain, cached, _) = load_vec_pair(bytes, 2048, &spec).unwrap();
+        let (ordinary, _) = load_bytes(&bytes, 2048, true).unwrap();
+        let (plain, cached, _) = load_vec_pair(bytes, 2048, true, &spec).unwrap();
         assert_eq!(plain.data, ordinary.data, "requesting a twin must not change the ordinary path");
         let cached = cached.unwrap();
         assert_eq!((plain.width, plain.height), (24, 32));
@@ -1147,7 +1153,7 @@ mod tests {
             return;
         };
         assert_eq!(probe_bytes("gh1.rw2", &gh1).unwrap().embedded_lens, None, "correction off: nothing to apply");
-        assert_eq!(load_bytes(&gh1, 320).unwrap().1.lens, None);
+        assert_eq!(load_bytes(&gh1, 320, true).unwrap().1.lens, None);
 
         // (file, how far off (px) the uncorrected corners are at the least, if they match within ±R at all)
         let files = [
@@ -1165,7 +1171,7 @@ mod tests {
             let bytes = std::fs::read(dir.join(name)).unwrap();
             let probed = probe_bytes(name, &bytes).unwrap();
             assert!(probed.embedded_lens.is_some_and(|l| l.warp.is_some()), "{name}: no distortion correction read");
-            let (src, info) = load_bytes(&bytes, 2 * EDGE).unwrap();
+            let (src, info) = load_bytes(&bytes, 2 * EDGE, true).unwrap();
             assert_eq!(info.lens, probed.embedded_lens, "{name}: probe and decode disagree");
             // Convert to DNG keeps it: the same correction, as the DNG's own `WarpRectilinear`
             let dng = lightcraft_raw::write_dng(&lightcraft_raw::decode(&bytes).unwrap(), &Default::default()).unwrap();
@@ -1256,13 +1262,13 @@ mod tests {
         let p = probe_bytes("x.cr3", &b).unwrap();
         assert_eq!((p.width, p.height, p.kind, p.format.as_str()), (48, 32, MediaKind::Raw, "CR3"));
         assert!(p.preview_only.is_some_and(|why| why.contains("CR3")));
-        let (img, src) = load_bytes(&b, 24).unwrap();
+        let (img, src) = load_bytes(&b, 24, true).unwrap();
         assert_eq!((img.width, img.height), (24, 16));
         assert!(!src.raw);
         // other formats still report a corrupt file as an error
         let mut dng = crate::tests_xmp::synthetic_dng_with(None, Default::default());
         dng.truncate(dng.len() / 2);
-        assert!(load_bytes(&dng, 24).is_err());
+        assert!(load_bytes(&dng, 24, true).is_err());
     }
 
     /// Issue #138: a DNG's own profile look (hue/saturation map, look table, tone curve) is
@@ -1276,7 +1282,7 @@ mod tests {
             img.data.iter().map(|p| (p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2])) / p[0].max(p[1]).max(p[2]).max(1e-6)).sum::<f32>()
                 / img.data.len() as f32
         };
-        let (before, info) = load_bytes(&plain, 64).unwrap();
+        let (before, info) = load_bytes(&plain, 64, true).unwrap();
         assert!(sat(&before) > 0.05, "the synthetic scene is coloured");
         assert!(info.camera_tone.is_none());
         // a map that removes all saturation, and a tone curve
@@ -1288,7 +1294,7 @@ mod tests {
             gain_table_map: None,
         };
         let with = lightcraft_raw::write_dng(&raw, &Default::default()).unwrap();
-        let (after, info) = load_bytes(&with, 64).unwrap();
+        let (after, info) = load_bytes(&with, 64, true).unwrap();
         assert!(sat(&after) < 1e-3, "saturation {} → {}", sat(&before), sat(&after));
         // a saturation-only map keeps brightness roughly (HSV value is kept in ProPhoto RGB)
         let mean = |img: &Rgb32f| img.data.iter().map(|p| p[0].max(p[1]).max(p[2])).sum::<f32>() / img.data.len() as f32;
@@ -1300,7 +1306,7 @@ mod tests {
             look_table: Some(HsvTable { hue_divisions: 1, sat_divisions: 2, val_divisions: 1, data: vec![[0.0, 1.0, 0.5]; 2], srgb_value: false }),
             ..Default::default()
         };
-        let (dim, _) = load_bytes(&lightcraft_raw::write_dng(&raw, &Default::default()).unwrap(), 64).unwrap();
+        let (dim, _) = load_bytes(&lightcraft_raw::write_dng(&raw, &Default::default()).unwrap(), 64, true).unwrap();
         assert!((mean(&dim) / mean(&before) - 0.5).abs() < 0.02, "{} vs {}", mean(&dim), mean(&before));
     }
 
@@ -1497,7 +1503,7 @@ mod tests {
             eprintln!("skip: {} absent", dir.display());
             return;
         };
-        let (img, _) = load_bytes(&bytes, 1600).unwrap();
+        let (img, _) = load_bytes(&bytes, 1600, true).unwrap();
         let (w, h) = (img.width, img.height);
         let lum = |p: [f32; 3]| lightcraft_color::luminance_2020(p);
         let chroma = |p: [f32; 3]| {
@@ -1582,7 +1588,7 @@ mod tests {
         ifd0.add_sub_ifd(matte("urn:com:apple:photo:2020:aux:semanticsomethingelse", false));
         let bytes = TiffWriter::new(ByteOrder::Little, false).write(&[ifd0]).unwrap();
 
-        let (img, info) = load_bytes(&bytes, 64).unwrap();
+        let (img, info) = load_bytes(&bytes, 64, true).unwrap();
         assert_eq!((img.width, img.height), (8, 16));
         assert!(info.mattes.is_some());
         let sky = Mask {
@@ -1611,7 +1617,7 @@ mod tests {
         use lightcraft_pipeline::{RenderRequest, render};
         let dng = crate::tests_xmp::synthetic_dng_with(None, Default::default());
         let raw = lightcraft_raw::decode(&dng).unwrap();
-        let (img, info) = load_bytes(&dng, 64).unwrap();
+        let (img, info) = load_bytes(&dng, 64, true).unwrap();
         let cc = info.camera_color.as_ref().expect("a DNG with a colour matrix");
         assert_eq!(cc.developed_for, lightcraft_raw::color::as_shot_white_xy(&raw));
         assert!(cc.tags.profile.is_empty());
@@ -1632,7 +1638,7 @@ mod tests {
         use lightcraft_raw::gaintable::GainTableMap;
         let plain = crate::tests_xmp::synthetic_dng_with(None, Default::default());
         let mut raw = lightcraft_raw::decode(&plain).unwrap();
-        let (before, _) = load_bytes(&lightcraft_raw::write_dng(&raw, &Default::default()).unwrap(), 64).unwrap();
+        let (before, _) = load_bytes(&lightcraft_raw::write_dng(&raw, &Default::default()).unwrap(), 64, true).unwrap();
         raw.color.profile.gain_table_map = Some(GainTableMap {
             points_v: 1,
             points_h: 1,
@@ -1647,7 +1653,7 @@ mod tests {
         });
         let with_map = lightcraft_raw::write_dng(&raw, &Default::default()).unwrap();
         assert!(lightcraft_raw::decode(&with_map).unwrap().color.profile.gain_table_map.is_some(), "the map is kept");
-        let (after, _) = load_bytes(&with_map, 64).unwrap();
+        let (after, _) = load_bytes(&with_map, 64, true).unwrap();
         assert_eq!(before.data, after.data);
     }
 
@@ -1673,8 +1679,8 @@ mod tests {
             gains: vec![1.0, 4.0],
         });
         let with_map = lightcraft_raw::write_dng(&raw, &Default::default()).unwrap();
-        let (img, info) = load_bytes(&with_map, 64).unwrap();
-        let (_, plain_info) = load_bytes(&plain, 64).unwrap();
+        let (img, info) = load_bytes(&with_map, 64, true).unwrap();
+        let (_, plain_info) = load_bytes(&plain, 64, true).unwrap();
         assert!(info.local_tone.is_some() && plain_info.local_tone.is_none());
         let req = RenderRequest::fit(64, 64);
         let mut s = lightcraft_develop::DevelopSettings::default();
@@ -1709,11 +1715,11 @@ mod tests {
         let b = cr3_with_preview(48, 32);
         let p = probe_bytes("x.cr3", &b).unwrap();
         assert_eq!((p.width, p.height, p.kind, p.format.as_str()), (48, 32, MediaKind::Raw, "CR3"));
-        let (img, src) = load_bytes(&b, 24).unwrap();
+        let (img, src) = load_bytes(&b, 24, true).unwrap();
         assert_eq!((img.width, img.height), (24, 16));
         assert!(!src.raw);
         // no preview at all: a clear error, not a panic
-        assert!(load_bytes(b"\0\0\0\x18ftypcrx \0\0\0\x01", 24).is_err());
+        assert!(load_bytes(b"\0\0\0\x18ftypcrx \0\0\0\x01", 24, true).is_err());
     }
 
     /// Issue #10: a raw variant we can't decode imports as "preview only" with the decoder's
@@ -1806,7 +1812,7 @@ mod tests {
         assert_eq!((p.kind, p.format.as_str(), p.width, p.height), (MediaKind::Raw, "IIQ", 24, 16));
         let why = p.preview_only.expect("marked preview only");
         assert!(why.contains("600x400") && why.contains("24x16"), "{why}");
-        let (img, src) = load_bytes(&b, 12).unwrap();
+        let (img, src) = load_bytes(&b, 12, true).unwrap();
         assert_eq!((img.width, img.height, src.raw), (12, 8, false));
         assert!(embedded_preview_srgb(&b, 12).is_some());
         // the same pixels without the private block are a small ordinary image
@@ -1830,7 +1836,7 @@ mod tests {
             let bytes = TiffWriter::default().write(&[ifd0]).unwrap();
             let p = probe_bytes("photo.tif", &bytes).unwrap();
             assert_eq!((p.kind, p.preview_only, p.width, p.height), (MediaKind::Image, None, 24, 16), "make: {make}");
-            let (img, src) = load_bytes(&bytes, 24).unwrap();
+            let (img, src) = load_bytes(&bytes, 24, true).unwrap();
             assert_eq!((img.width, img.height, src.raw), (24, 16, false), "make: {make}");
         }
     }
@@ -1849,7 +1855,7 @@ mod tests {
         let p = probe_bytes("A.MRW", &f).unwrap();
         assert_eq!((p.kind, p.format.as_str(), p.width, p.height), (MediaKind::Raw, "MRW", 40, 30));
         assert!(p.preview_only.is_some_and(|w| w.contains("Mrw")));
-        let (img, src) = load_bytes(&f, 20).unwrap();
+        let (img, src) = load_bytes(&f, 20, true).unwrap();
         assert_eq!((img.width, img.height, src.raw), (20, 15, false));
         // without a JPEG: a clear error
         let e = probe_bytes("A.MRW", b"\0MRM\0\x01\0\0 nothing here").unwrap_err();
@@ -1876,7 +1882,7 @@ mod tests {
         let f = TiffWriter::default().write(&[ifd]).unwrap();
         let p = probe_bytes("GOPR0001.GPR", &f).unwrap();
         assert_eq!((p.kind, p.preview_only, p.width, p.height), (MediaKind::Raw, None, 32, 16));
-        let e = load_bytes(&f, 16).unwrap_err();
+        let e = load_bytes(&f, 16, true).unwrap_err();
         assert!(e.contains("GoPro VC-5") && e.contains("not decoded yet"), "{e}");
     }
 
@@ -1930,8 +1936,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A minimal Sony ARW of `model` whose raw IFD carries the Sony distortion table (`0x7037`), so it decodes to a
-    /// valid CFA image with the body's embedded lens correction (as `crates/raw/src/vendor/arw.rs` lays it out).
+    /// A minimal Sony ARW of `model` whose raw IFD carries the Sony distortion table (`0x7037`) and lateral-CA
+    /// table (`0x7035`), so it decodes to a valid CFA image with the body's embedded lens corrections (as
+    /// `crates/raw/src/vendor/arw.rs` lays it out). The strip is a ramp, so a CA warp moves its samples.
     fn sony_arw(model: &str) -> Vec<u8> {
         use lightcraft_tiff::tags::{self as t, photometric};
         use lightcraft_tiff::{ByteOrder, IfdBuilder, ImageData, TiffWriter, Value};
@@ -1950,7 +1957,13 @@ mod tests {
         raw.set(t::DEFAULT_CROP_SIZE, Value::Long(vec![30, 20]));
         raw.set(0x74c8, Value::Long(vec![30, 20]));
         raw.set(0x7037, Value::SShort(vec![16, -4, 0, 11, 27, 49, 75, 110, 149, 198, 253, 318, 392, 476, 571, 681, 807]));
-        raw.set_image(ImageData::Strips { rows_per_strip: 24, strips: vec![vec![0; 32 * 24 * 2]] });
+        // count 32: red's 16 knots then blue's 16 (negative then positive: the planes shift opposite ways)
+        let mut ca = vec![32i16];
+        ca.extend((0..16).map(|i| -64 * i));
+        ca.extend((0..16).map(|i| 64 * i));
+        raw.set(0x7035, Value::SShort(ca));
+        let strip: Vec<u8> = (0..32u16 * 24).flat_map(|i| (i.wrapping_mul(37) & 0x3fff).to_le_bytes()).collect();
+        raw.set_image(ImageData::Strips { rows_per_strip: 24, strips: vec![strip] });
         TiffWriter { order: ByteOrder::Little, ..Default::default() }.write(&[raw]).unwrap()
     }
 
@@ -1969,5 +1982,23 @@ mod tests {
         assert_eq!(warp.planes, [warp.planes[0]; 3]);
         assert!((warp.center.x - 0.5).abs() < 1e-9 && (warp.center.y - 0.5).abs() < 1e-9, "{:?}", warp.center);
         assert!(of("ILCE-7M3").is_none(), "unverified body");
+    }
+
+    /// "Remove Chromatic Aberration" governs the file's table: off leaves the CFA as decoded, on warps it before
+    /// demosaic — and records `raw_lens_ca`, which is what keeps the pipeline's estimator from stacking on top. A
+    /// body without a usable table stays `raw_lens_ca: false`, so the estimator is the fallback there.
+    #[test]
+    fn remove_ca_gates_the_files_lateral_ca_table() {
+        let bytes = sony_arw("ILCE-7M4");
+        let (off, off_info) = load_bytes(&bytes, 32, false).unwrap();
+        let (on, on_info) = load_bytes(&bytes, 32, true).unwrap();
+        assert!(!off_info.raw_lens_ca, "off: the table is not applied");
+        assert!(on_info.raw_lens_ca, "on: the file's table is applied");
+        assert!(off.data != on.data, "the table moves the source's pixels");
+        assert_eq!((off.width, off.height), (on.width, on.height));
+        assert_eq!(off_info.lens, on_info.lens, "the distortion warp is the same either way");
+        // no usable table: the pre-demosaic correction is absent, so the flag says the estimator may stand in
+        let (_, plain_info) = load_bytes(&sony_arw("ILCE-7M3"), 32, true).unwrap();
+        assert!(!plain_info.raw_lens_ca, "no table: the pipeline's estimator is the fallback");
     }
 }

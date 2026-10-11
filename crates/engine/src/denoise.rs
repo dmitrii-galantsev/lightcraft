@@ -764,6 +764,8 @@ pub(crate) fn eligible(p: &Photo) -> bool {
 pub(crate) fn product_key(fingerprint: &str, p: &Photo) -> String {
     let mut h = Hasher128::new();
     h.str("lcdn").u64(u64::from(product::ALGORITHM)).str(fingerprint).str(&crate::media::content_key(p));
+    // the "Remove Chromatic Aberration" choice the mosaic is developed with: another choice is another product
+    h.u64(u64::from(p.develop.optics_remove_ca()));
     h.finish().to_string()
 }
 
@@ -823,6 +825,8 @@ pub(crate) struct JobSpec {
     pub read: Option<ByteReader>,
     pub product: PathBuf,
     pub key: String,
+    /// Develop the mosaic with the file's lateral-CA table applied ("Remove Chromatic Aberration").
+    pub lateral_ca: bool,
     pub manifest: DenoiserManifest,
     pub onnx: PathBuf,
     pub model: ModelSlot,
@@ -914,7 +918,7 @@ pub(crate) fn make_product(spec: &JobSpec, progress: Option<&Progress>) -> Resul
                 "only Bayer raw files can be denoised (this one has another sensor layout or is already demosaiced)".into(),
             ));
         }
-        let n = raw.normalized().map_err(|e| MakeError::Failed(e.to_string()))?;
+        let n = raw.normalized_ca(spec.lateral_ca).map_err(|e| MakeError::Failed(e.to_string()))?;
         drop(raw);
         let layout =
             n.cfa.as_ref().and_then(layout_of).ok_or_else(|| MakeError::Unsupported("the colour filter layout is not a Bayer pattern".into()))?;
@@ -1368,6 +1372,7 @@ impl Session {
             read: self.media.file_bytes.clone(),
             product: spec.product,
             key: spec.key,
+            lateral_ca: p.develop.optics_remove_ca(),
             manifest: active.manifest.clone(),
             onnx: active.onnx.clone(),
             model: active.model.clone(),

@@ -123,9 +123,11 @@ impl WireJob {
 
     /// Identifies the decoded source this job needs.
     fn source_key(&self) -> String {
+        // the "Remove Chromatic Aberration" choice is part of the source's identity: another choice is a reload
+        let ca = self.settings.optics_remove_ca();
         match &self.origin {
-            Source::File { path } => format!("{}:{:?}:{}:{path}", self.cache_generation, self.source_identity, self.max_edge),
-            Source::Demo { scene } => format!("{}:{:?}:{}:demo:{scene}", self.cache_generation, self.source_identity, self.max_edge),
+            Source::File { path } => format!("{}:{:?}:{}:{ca}:{path}", self.cache_generation, self.source_identity, self.max_edge),
+            Source::Demo { scene } => format!("{}:{:?}:{}:{ca}:demo:{scene}", self.cache_generation, self.source_identity, self.max_edge),
         }
     }
 
@@ -176,11 +178,14 @@ impl WorkerCore {
             None => {
                 let src = match (&job.origin, original) {
                     (Source::File { .. }, Some(bytes)) => {
-                        let (image, info) = lightcraft_engine::files::load_bytes(bytes, job.max_edge)?;
-                        DecodedSource::new(Arc::new(image), Some(info))
+                        let ca = job.settings.optics_remove_ca();
+                        let (image, info) = lightcraft_engine::files::load_bytes(bytes, job.max_edge, ca)?;
+                        DecodedSource::new(Arc::new(image), Some(info)).with_ca_choice(ca)
                     }
                     (Source::File { path }, None) => return Err(format!("{path}: original not found in browser storage")),
-                    (origin @ Source::Demo { .. }, _) => self.media.origin_ref(origin, job.max_edge).load_source()?,
+                    (origin @ Source::Demo { .. }, _) => {
+                        self.media.origin_ref(origin, job.max_edge, job.settings.optics_remove_ca()).load_source()?
+                    }
                 };
                 let cost = src.image.width * src.image.height * 12 + 64;
                 self.sources.insert(key, src.clone(), cost);

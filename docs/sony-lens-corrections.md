@@ -85,6 +85,36 @@ is a small fraction of the uncorrected render's; PR #824's raw-CFA value (3.36·
 under-corrects by about 2×. The unit is a single number for both bodies (as their convention shares everything else);
 it scatters by about ±40 % across lenses, so residual fringing remains.
 
+### The control and the default
+
+The Optics panel's **"Remove Chromatic Aberration"** checkbox governs it (Lightroom Classic semantics, independent of
+"Enable Lens Corrections"). With it **on**, a render uses the file's table before demosaic when it records a usable
+one, and the pipeline's post-demosaic estimator (`estimate_lateral_ca`) as the **fallback** when it does not — never
+both: `SourceInfo::raw_lens_ca` says the source already carries the table's correction, and `frame_for` skips the
+estimator then. With it **off**, neither runs. The choice is part of the source's identity, so the raw load is told it
+(`FileLoader`/`PairLoader` carry it; `DecodedSource::ca_choice` keeps a source developed for the other choice from
+standing in), and toggling the checkbox re-develops the file.
+
+Measured on the four frames above (corner R/G, B/G in px at 1440; the switch's own effect):
+
+| Frame | off | on, file has a table | estimator fallback (no table) | on + a forced estimator (control) |
+|---|---:|---:|---:|---:|
+| DSC03836 | −0.25, +0.26 | −0.02, +0.17 | −0.05, +0.04 | +0.02, +0.02 |
+| DSC04440 | +0.03, +0.10 | +0.02, +0.05 | −0.03, +0.03 | −0.03, −0.01 |
+| DSC06980 | −0.23, +0.32 | +0.05, −0.05 | −0.03, −0.02 | +0.07, −0.07 |
+| DSC02559 | −0.03, +0.25 | −0.01, −0.15 | −0.01, +0.09 | −0.02, −0.09 |
+
+The last column is what the estimator would do if it were **not** gated: run on a render the table already corrected,
+it estimates what is *left* (up to 0.17 px, the table's own residual, not near zero) and lays a second, post-demosaic
+warp on it — PR #824's 0.032 → 0.052 px case. So it is self-limiting only in that it tracks the residual; it is not
+near zero, because the table's unit is a compromise and leaves some. The gate is what keeps the two apart.
+
+The default is **on** (Lightroom Classic checks it by default). That changes existing renders: every raw with a usable
+table now gets its CA removed before demosaic without the user asking, and every raw **without** one now runs the
+post-demosaic estimator by default where it previously did not (the "estimator fallback" column is that impact — off
+−0.25 px → ≈0.04–0.09 px in the corners). It is a render-altering default change, like the two noise changes already
+in place in-place.
+
 Four ILCE-7M4 frames on three lenses were used, the corner R/G and B/G CA in px at a 1440 px render:
 
 | Frame (lens) | off R/G, B/G | on (1.6·10⁶) R/G, B/G | camera JPEG R/G, B/G |

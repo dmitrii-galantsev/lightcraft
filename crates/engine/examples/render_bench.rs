@@ -121,7 +121,7 @@ fn main() {
                 println!(
                     "  {:<36} {}",
                     format!("load_bytes({edge}):"),
-                    best(n, || drop(lightcraft_engine::files::load_bytes(&bytes, edge).expect("load")))
+                    best(n, || drop(lightcraft_engine::files::load_bytes(&bytes, edge, true).expect("load")))
                 );
             }
         }
@@ -131,7 +131,7 @@ fn main() {
         Some(path) => {
             let bytes = std::fs::read(path).expect("read");
             let t = Instant::now();
-            let r = lightcraft_engine::files::load_bytes(&bytes, usize::MAX).expect("decode");
+            let r = lightcraft_engine::files::load_bytes(&bytes, usize::MAX, true).expect("decode");
             println!("decode full: {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
             r
         }

@@ -728,6 +728,13 @@ impl RawImage {
     /// `OpcodeList2` (on normalised values) after, then the file's own lateral-CA correction
     /// ([`Self::lateral_ca`]) on the CFA colour planes. 1.0 = white level.
     pub fn normalized(&self) -> Result<Normalized> {
+        self.normalized_ca(true)
+    }
+
+    /// [`Self::normalized`] with `lateral_ca` choosing whether the file's lateral-CA table is applied to the CFA
+    /// planes before demosaic (`false`: the user turned "Remove Chromatic Aberration" off). The file's record
+    /// ([`Self::lateral_ca`]) stays untouched: "the file has no table" and "the user turned it off" are different.
+    pub fn normalized_ca(&self, lateral_ca: bool) -> Result<Normalized> {
         self.validate()?;
         let (w, cpp) = (self.width, self.cpp);
         let a = self.active_area;
@@ -766,7 +773,7 @@ impl RawImage {
         opcodes::apply_list(&self.opcodes.list2, &mut out, a.width, a.height, cpp, cfa.as_ref(), 1.0);
         let n = Normalized { width: a.width, height: a.height, cpp, data: out, cfa };
         // lateral CA last, on the mosaic: red and blue are moved onto green's samples before demosaic
-        Ok(match &self.lateral_ca {
+        Ok(match self.lateral_ca.as_ref().filter(|_| lateral_ca) {
             Some(op) => opcodes::warp_cfa(&n, op),
             None => n,
         })
@@ -775,7 +782,13 @@ impl RawImage {
     /// Full "raw → camera RGB" path: normalise, demosaic with `method`, apply `OpcodeList3`, then the default crop.
     /// The result is camera RGB (not white balanced), white level = 1.0, not oriented.
     pub fn develop(&self, method: Method) -> Result<Rgb32f> {
-        let n = self.normalized()?;
+        self.develop_ca(method, true)
+    }
+
+    /// [`Self::develop`] with `lateral_ca` choosing whether the file's lateral-CA table is applied (see
+    /// [`Self::normalized_ca`]).
+    pub fn develop_ca(&self, method: Method, lateral_ca: bool) -> Result<Rgb32f> {
+        let n = self.normalized_ca(lateral_ca)?;
         let rgb = demosaic(&n, method);
         drop(n);
         Ok(self.finish_demosaiced(rgb))

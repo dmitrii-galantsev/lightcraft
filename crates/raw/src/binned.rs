@@ -35,19 +35,30 @@ impl RawImage {
     /// not oriented). `None` when the data cannot be binned ([`RawImage::can_bin`]) or carries an
     /// `OpcodeList3` (whose operations are defined at full resolution); callers then demosaic.
     pub fn develop_binned(&self, k: usize, clip: f32) -> Result<Option<Rgb32f>> {
-        Ok(self.bin(k, clip, true)?.map(|(img, _)| img))
+        self.develop_binned_ca(k, clip, true)
+    }
+
+    /// [`Self::develop_binned`] with `lateral_ca` choosing whether the file's lateral-CA table is applied (see
+    /// [`RawImage::normalized_ca`]).
+    pub fn develop_binned_ca(&self, k: usize, clip: f32, lateral_ca: bool) -> Result<Option<Rgb32f>> {
+        Ok(self.bin(k, clip, true, lateral_ca)?.map(|(img, _)| img))
     }
 
     /// Like [`RawImage::develop_binned`], with every channel the mean of its block's samples, and the
     /// clip mask: per output pixel, bits [`crate::highlight::CLIPPED_R`] / `_G` / `_B` for the colours
     /// with a sample at or above `clip` in the block. Hand both to [`crate::highlight::reconstruct_masked`].
     pub fn develop_binned_masked(&self, k: usize, clip: f32) -> Result<Option<(Rgb32f, Vec<u8>)>> {
-        self.bin(k, clip, false)
+        self.develop_binned_masked_ca(k, clip, true)
+    }
+
+    /// [`Self::develop_binned_masked`] with `lateral_ca` choosing whether the file's lateral-CA table is applied.
+    pub fn develop_binned_masked_ca(&self, k: usize, clip: f32, lateral_ca: bool) -> Result<Option<(Rgb32f, Vec<u8>)>> {
+        self.bin(k, clip, false, lateral_ca)
     }
 
     /// The binned image and its clip mask; `keep_max`: a channel with a clipped sample takes the
     /// block's maximum sample of the colour instead of the mean.
-    fn bin(&self, k: usize, clip: f32, keep_max: bool) -> Result<Option<(Rgb32f, Vec<u8>)>> {
+    fn bin(&self, k: usize, clip: f32, keep_max: bool, lateral_ca: bool) -> Result<Option<(Rgb32f, Vec<u8>)>> {
         self.validate()?;
         if !self.can_bin(k) || !self.opcodes.list3.is_empty() {
             return Ok(None);
@@ -62,8 +73,8 @@ impl RawImage {
             return Ok(None);
         }
         // Opcode lists 1/2 need the normalised copy; plain files are normalised row by row.
-        let norm: Option<Normalized> =
-            if self.opcodes.list1.is_empty() && self.opcodes.list2.is_empty() && self.lateral_ca.is_none() { None } else { Some(self.normalized()?) };
+        let need_norm = !self.opcodes.list1.is_empty() || !self.opcodes.list2.is_empty() || (lateral_ca && self.lateral_ca.is_some());
+        let norm: Option<Normalized> = if need_norm { Some(self.normalized_ca(lateral_ca)?) } else { None };
         let cfa = cfa.shifted(a.x, a.y);
         let range = self.white_at(0) - self.black.mean();
         let scale = if range > 0.0 { 1.0 / range } else { 1.0 };
@@ -250,5 +261,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The develop-time choice governs the file's lateral-CA table, and the file's record stays: "the file has no
+    /// table" ([`RawImage::lateral_ca`] is `None`) and "the user turned it off" (`normalized_ca(false)`) are apart.
+    #[test]
+    fn the_lateral_ca_choice_reaches_the_mosaic_and_the_binning() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let img = Rgb32f::from_fn(24, 16, |x, y| [x as f32 * 0.04, 0.5, y as f32 * 0.04]);
+        let mut raw = raw_from(&mosaic_from_rgb(&img, &Cfa::bayer("RGGB").unwrap()), 0.0, 4095.0);
+        raw.lateral_ca = Some(Opcode::WarpRectilinear { planes: vec![[1.02, 0.0, 0.0, 0.0, 0.0, 0.0], identity, identity], center: [0.5, 0.5] });
+        let on = raw.normalized_ca(true).unwrap();
+        let off = raw.normalized_ca(false).unwrap();
+        assert!(on.data != off.data, "the table warps the mosaic when the choice is on");
+        assert!(raw.lateral_ca.is_some(), "the file's own record is not touched by the choice");
+        // binned development (previews, thumbnails) follows the same choice
+        let (bo, _) = raw.develop_binned_masked_ca(2, 0.99, false).unwrap().unwrap();
+        let (bn, _) = raw.develop_binned_masked_ca(2, 0.99, true).unwrap().unwrap();
+        assert!(bo.data != bn.data, "binning follows the choice");
+        // a raw with no table is identical either way: the choice only matters when one is recorded
+        let plain = raw_from(&mosaic_from_rgb(&img, &Cfa::bayer("RGGB").unwrap()), 0.0, 4095.0);
+        assert_eq!(plain.normalized_ca(true).unwrap().data, plain.normalized_ca(false).unwrap().data);
     }
 }

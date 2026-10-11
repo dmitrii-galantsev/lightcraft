@@ -144,9 +144,9 @@ impl Originals {
     /// Engine hooks that decode/probe from memory.
     pub fn hooks(&self) -> (FileLoader, FileProbe) {
         let s = self.clone();
-        let loader: FileLoader = Arc::new(move |path: &str, max_edge: usize| {
+        let loader: FileLoader = Arc::new(move |path: &str, max_edge: usize, lateral_ca: bool| {
             let bytes = s.get(path).ok_or_else(|| format!("{path}: the original is still loading from browser storage"))?;
-            load_bytes(&bytes, max_edge)
+            load_bytes(&bytes, max_edge, lateral_ca)
         });
         let s = self.clone();
         let probe: FileProbe = Arc::new(move |path: &str| {

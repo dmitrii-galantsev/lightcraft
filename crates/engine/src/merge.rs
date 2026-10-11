@@ -251,7 +251,7 @@ fn render_preview(
     crop: Option<[f64; 4]>,
     ghost: Option<&lightcraft_raster::Plane>,
 ) -> std::result::Result<Rgba8, String> {
-    let (src, info) = crate::files::load_bytes(dng, edge)?;
+    let (src, info) = crate::files::load_bytes(dng, edge, true)?;
     let mut s = DevelopSettings::for_raw(info.as_shot_temp, info.as_shot_tint);
     if auto {
         apply_auto(&mut s, &src, &info);

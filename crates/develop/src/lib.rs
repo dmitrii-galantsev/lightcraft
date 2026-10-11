@@ -80,6 +80,13 @@ impl DevelopSettings {
         !self.disabled_sections.iter().any(|s| s == section)
     }
 
+    /// Whether "Remove Chromatic Aberration" is on (its checkbox under an Optics section whose eye is
+    /// on). See [`crate::Optics::remove_ca`]: when the file records a usable table, its correction is
+    /// applied to the CFA before demosaic; otherwise the pipeline estimates one after demosaic.
+    pub fn optics_remove_ca(&self) -> bool {
+        self.section_enabled("optics") && self.optics.remove_ca
+    }
+
     /// The settings as rendered: an Edit-panel section whose eye is off contributes nothing (issue
     /// #316). Light (with its tone curve), Color (white balance, presence, the mixers, colour grading
     /// and point colour) and Detail are reset to their defaults here; Effects, Optics, Geometry and

@@ -674,9 +674,7 @@ mod tests {
     #[test]
     fn ca_opcode_is_red_and_blue_relative_to_green() {
         let t = read_tables(&sony_lens_ifd(&FF_DISTORTION, &FF_VIGNETTING, &FF_HQ_CA, [0, 2, 1]));
-        let Some(Opcode::WarpRectilinear { planes, center }) = ca_planes(&t, knots(), FF_ACTIVE, FF_CROP) else {
-            panic!("no CA warp")
-        };
+        let Some(Opcode::WarpRectilinear { planes, center }) = ca_planes(&t, knots(), FF_ACTIVE, FF_CROP) else { panic!("no CA warp") };
         assert_eq!(planes.len(), 3);
         assert_eq!(planes[1], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], "green is the identity");
         assert!((center[0] - 0.4996005991).abs() < 1e-9 && (center[1] - 0.5).abs() < 1e-9, "the same centre as the distortion warp: {center:?}");
@@ -712,13 +710,11 @@ mod tests {
     #[test]
     fn ilce_7m4_ca_becomes_a_cfa_warp() {
         const CA: [i16; 33] = [
-            32, 0, -128, -128, -256, -256, -384, -384, -384, -384, -384, -512, -512, -512, -384, -384, -256, -128, 0, 128, 128, 128, 128, 256,
-            256, 256, 256, 256, 256, 256, 256, 256, 128,
+            32, 0, -128, -128, -256, -256, -384, -384, -384, -384, -384, -512, -512, -512, -384, -384, -256, -128, 0, 128, 128, 128, 128, 256, 256,
+            256, 256, 256, 256, 256, 256, 256, 128,
         ];
         let ifd = ifd(vec![(DISTORTION_PARAMS, Value::SShort(M4_DISTORTION.to_vec())), (CA_PARAMS, Value::SShort(CA.to_vec()))]);
-        let Some(Opcode::WarpRectilinear { planes, .. }) = ca_opcode(&ifd, "ILCE-7M4", M4_ACTIVE, M4_CROP) else {
-            panic!("no CA warp")
-        };
+        let Some(Opcode::WarpRectilinear { planes, .. }) = ca_opcode(&ifd, "ILCE-7M4", M4_ACTIVE, M4_CROP) else { panic!("no CA warp") };
         assert_eq!(planes.len(), 3);
         assert_eq!(planes[1], [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         // the table's first knots are negative (red in) then positive (blue out): the radial factors differ

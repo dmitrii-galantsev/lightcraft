@@ -55,8 +55,9 @@ const HEADER_MAX: u64 = 4096;
 /// wrote the proxy's pixels (colour matrix and profile are baked into them) and stored tone curve.
 const LOOK_FIELD: &str = "look_version";
 
-/// Encode a source image (and the decoder's camera tone curve, if any) as a smart preview.
-pub fn encode(img: &Rgb32f, tone: Option<&CameraTone>) -> Result<Vec<u8>, String> {
+/// Encode a source image (and the decoder's camera tone curve, if any) as a smart preview. `raw_lens_ca`: the
+/// pixels carry the file's lateral-CA correction, so a render from this proxy must not also estimate one.
+pub fn encode(img: &Rgb32f, tone: Option<&CameraTone>, raw_lens_ca: bool) -> Result<Vec<u8>, String> {
     // scale so all but the brightest 0.05 % fit into 0..1
     let mut lum: Vec<f32> = img.data.iter().map(|c| c[0].max(c[1]).max(c[2])).filter(|v| v.is_finite()).collect();
     let scale = if lum.is_empty() {
@@ -84,7 +85,8 @@ pub fn encode(img: &Rgb32f, tone: Option<&CameraTone>) -> Result<Vec<u8>, String
     )
     .map_err(|e| e.to_string())?;
     let mut out = MAGIC.to_vec();
-    let mut head = serde_json::json!({"w": img.width, "h": img.height, "scale": scale, LOOK_FIELD: crate::camera_preview::LOOK_VERSION});
+    let mut head =
+        serde_json::json!({"w": img.width, "h": img.height, "scale": scale, "ca": raw_lens_ca, LOOK_FIELD: crate::camera_preview::LOOK_VERSION});
     if let Some(t) = tone {
         head["tone"] = serde_json::to_value(t).map_err(|e| e.to_string())?;
     }
@@ -94,19 +96,20 @@ pub fn encode(img: &Rgb32f, tone: Option<&CameraTone>) -> Result<Vec<u8>, String
     Ok(out)
 }
 
-/// Decode a smart preview back into a source image and its stored camera tone curve (an invalid
-/// curve is ignored, like a missing one).
-pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>), String> {
+/// Decode a smart preview back into a source image, its stored camera tone curve and whether its pixels carry
+/// the file's lateral-CA correction (an invalid curve is ignored, like a missing one).
+pub fn decode(bytes: &[u8]) -> Result<(Rgb32f, Option<CameraTone>, bool), String> {
     let rest = bytes.strip_prefix(MAGIC).ok_or("not a smart preview")?;
     let nl = rest.iter().position(|b| *b == b'\n').ok_or("bad smart preview")?;
     let head: serde_json::Value = serde_json::from_slice(&rest[..nl]).map_err(|e| e.to_string())?;
     let scale = head["scale"].as_f64().unwrap_or(1.0) as f32;
     let tone = head.get("tone").and_then(|t| serde_json::from_value::<CameraTone>(t.clone()).ok());
+    let raw_lens_ca = head.get("ca").and_then(|c| c.as_bool()).unwrap_or(false);
     let d = lightcraft_codecs::decode(&rest[nl + 1..], Default::default()).map_err(|e| e.to_string())?;
     // the decoder undoes the sRGB encoding; the values are the source's own primaries
     let mut img = d.image;
     img.data.iter_mut().for_each(|c| *c = c.map(|v| v * scale));
-    Ok((img, tone))
+    Ok((img, tone, raw_lens_ca))
 }
 
 /// Where a library keeps its smart previews.
@@ -310,9 +313,10 @@ pub fn mark_look_checked(dir: &Path) -> Result<(), String> {
 }
 
 /// Load the proxy at `path`.
-pub fn load(path: &Path) -> Result<crate::media::DecodedSource, String> {
+pub fn load(path: &Path, lateral_ca: bool) -> Result<crate::media::DecodedSource, String> {
     let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    decode(&b).map(|(image, camera_tone)| crate::media::DecodedSource { image: Arc::new(image), info: None, camera_tone, denoised: None })
+    let (image, camera_tone, raw_lens_ca) = decode(&b)?;
+    Ok(crate::media::DecodedSource { image: Arc::new(image), info: None, camera_tone, denoised: None, ca_choice: lateral_ca, raw_lens_ca })
 }
 
 #[cfg(test)]
@@ -387,7 +391,7 @@ mod tests {
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
         let img = lightcraft_scenes::demo_library()[0].render(64, 40);
-        let good = encode(&img, None).unwrap();
+        let good = encode(&img, None, false).unwrap();
         std::fs::write(a.join("1.lcsp"), &good).unwrap();
         assert!(is_valid(&a.join("1.lcsp")));
         for cut in [good.len() - 1, good.len() / 2, 10, 0] {
@@ -409,15 +413,17 @@ mod tests {
         }))
         .unwrap();
         let img = lightcraft_scenes::demo_library()[0].render(64, 40);
-        let bytes = encode(&img, Some(&tone)).unwrap();
+        let bytes = encode(&img, Some(&tone), true).unwrap();
         assert_eq!(decode(&bytes).unwrap().1, Some(tone));
+        assert!(decode(&bytes).unwrap().2, "the CA flag travels too");
         let dir = temp("tone");
         let path = dir.join("t.lcsp");
         std::fs::write(&path, &bytes).unwrap();
         // the longer header is still read by the validity check, and the curve by `load`
         assert!(is_valid(&path));
-        let loaded = load(&path).unwrap();
+        let loaded = load(&path, false).unwrap();
         assert_eq!(loaded.camera_tone, Some(tone));
+        assert!(loaded.raw_lens_ca, "the proxy knows it carries the table's CA");
         let header = lightcraft_pipeline::SourceInfo { raw: true, ..Default::default() };
         assert_eq!(loaded.info_or(header).camera_tone, Some(tone));
         // a hostile curve (reversing knots) is ignored, not trusted
@@ -429,7 +435,7 @@ mod tests {
         let mut hostile = MAGIC.to_vec();
         hostile.extend_from_slice(head.to_string().as_bytes());
         hostile.extend_from_slice(&bytes[nl..]);
-        let (pixels, tone) = decode(&hostile).unwrap();
+        let (pixels, tone, _ca) = decode(&hostile).unwrap();
         assert_eq!((pixels.width, tone), (img.width, None));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -437,7 +443,7 @@ mod tests {
     #[test]
     fn roundtrip_keeps_the_picture() {
         let img = lightcraft_scenes::demo_library()[0].render(160, 100);
-        let (back, tone) = decode(&encode(&img, None).unwrap()).unwrap();
+        let (back, tone, _ca) = decode(&encode(&img, None, false).unwrap()).unwrap();
         assert_eq!((back.width, back.height), (img.width, img.height));
         assert!(tone.is_none());
         let mut err = 0.0f64;

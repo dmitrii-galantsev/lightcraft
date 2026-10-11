@@ -652,6 +652,8 @@ impl Default for Detail {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Optics {
+    /// "Remove Chromatic Aberration" (Lightroom Classic's default: on). The file's own table is used
+    /// before demosaic when it records one; the pipeline's estimator is the fallback when it does not.
     pub remove_ca: bool,
     pub lens_profile: bool,
     pub profile_distortion: f64,
@@ -674,7 +676,7 @@ pub struct Optics {
 impl Default for Optics {
     fn default() -> Self {
         Self {
-            remove_ca: false,
+            remove_ca: true,
             lens_profile: false,
             profile_distortion: 100.0,
             profile_vignetting: 100.0,

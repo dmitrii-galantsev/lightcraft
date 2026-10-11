@@ -212,7 +212,9 @@ struct SmartCounts {
 fn original_only(source: crate::media::SourceRef) -> Option<crate::media::SourceRef> {
     use crate::media::SourceRef;
     match source {
-        SourceRef::File { path, max_edge, loader, denoise, .. } => Some(SourceRef::File { path, max_edge, loader, fallback: None, denoise }),
+        SourceRef::File { path, max_edge, loader, lateral_ca, denoise, .. } => {
+            Some(SourceRef::File { path, max_edge, loader, lateral_ca, fallback: None, denoise })
+        }
         SourceRef::Loaded(d) if d.info.is_some() => Some(SourceRef::Loaded(d)),
         _ => None,
     }
@@ -268,7 +270,10 @@ fn smart_run(
                 let r = source
                     .ok_or_else(|| "nothing to build from".to_string())
                     .and_then(|s| s.load_source())
-                    .and_then(|src| crate::smart::encode(&src.image, src.info_or(Default::default()).camera_tone.as_ref()))
+                    .and_then(|src| {
+                        let info = src.info_or(Default::default());
+                        crate::smart::encode(&src.image, info.camera_tone.as_ref(), info.raw_lens_ca)
+                    })
                     .and_then(|b| {
                         let parent = path.parent().ok_or_else(|| format!("{}: no parent folder", path.display()))?;
                         // Only create the leaf shard: do not recreate a missing external drive.
@@ -332,7 +337,7 @@ fn smart(s: &mut Session, p: &Value) -> Result<Value> {
             continue;
         }
         let path = crate::smart::sharded_file_path(&dir, &ph);
-        let source = (!discard).then(|| s.media.source_ref(&ph, crate::media::SourceLevel::Preview));
+        let source = (!discard).then(|| s.media.source_ref(&ph, crate::media::SourceLevel::Preview, ph.develop.optics_remove_ca()));
         jobs.push((id, path, source, ph.fitted_look()));
     }
     let custom = s.smart_previews_dir.is_some();
@@ -376,8 +381,10 @@ pub(crate) fn refresh_stale_smart_previews(s: &mut Session) -> Option<std::threa
     }
     let max_edge = crate::media::SourceLevel::Preview.max_edge();
     let photos: Vec<_> = s.catalog.photos().filter(|p| matches!(p.source, lightcraft_catalog::Source::File { .. }) && p.fitted_look()).collect();
-    let jobs: Vec<SmartJob> =
-        photos.iter().map(|p| (p.id, crate::smart::sharded_file_path(&dir, p), Some(s.media.origin_ref(&p.source, max_edge)), true)).collect();
+    let jobs: Vec<SmartJob> = photos
+        .iter()
+        .map(|p| (p.id, crate::smart::sharded_file_path(&dir, p), Some(s.media.origin_ref(&p.source, max_edge, p.develop.optics_remove_ca())), true))
+        .collect();
     std::thread::Builder::new()
         .name("lc-smart-look".into())
         .spawn(move || refresh_stale(&dir, jobs))

@@ -118,8 +118,10 @@ fn source_edge_needed(p: &Photo, settings: &DevelopSettings, apply_crop: bool, o
     if needed.is_finite() { needed.min(usize::MAX as f64 / 2.0) as usize } else { out_long }
 }
 
-/// Decodes a file into a linear Rec.2020 image no larger than `max_edge` (set by the app).
-pub type FileLoader = Arc<dyn Fn(&str, usize) -> Result<(Rgb32f, SourceInfo), String> + Send + Sync>;
+/// Decodes a file into a linear Rec.2020 image no larger than `max_edge` (set by the app). For a raw whose file
+/// records a lateral-CA table, `lateral_ca` chooses whether it is applied to the CFA before demosaic (the
+/// "Remove Chromatic Aberration" choice; see [`SourceRef::File`]).
+pub type FileLoader = Arc<dyn Fn(&str, usize, bool) -> Result<(Rgb32f, SourceInfo), String> + Send + Sync>;
 
 /// A raw file's embedded (camera-rendered) preview as display sRGB, oriented, no larger than
 /// `max_edge` (set by the app). `None`: no usable preview.
@@ -141,8 +143,8 @@ pub struct DenoiseSpec {
 }
 
 /// Decodes a raw file once and develops it twice: as usual, and from the denoised picture in `spec` when that can be
-/// read (`None` when it cannot). Both are at most `max_edge` long and the same size.
-pub type PairLoader = Arc<dyn Fn(&str, usize, &DenoiseSpec) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> + Send + Sync>;
+/// read (`None` when it cannot). Both are at most `max_edge` long and the same size. `lateral_ca` as [`FileLoader`].
+pub type PairLoader = Arc<dyn Fn(&str, usize, bool, &DenoiseSpec) -> Result<(Rgb32f, Option<Rgb32f>, SourceInfo), String> + Send + Sync>;
 
 /// A photo's denoised picture next to its plain one, and the last mix of the two that was asked for.
 pub struct Twin {
@@ -172,11 +174,23 @@ pub struct DecodedSource {
     pub camera_tone: Option<lightcraft_pipeline::tone::CameraTone>,
     /// The same picture developed from the AI-denoised mosaic, when the photo has one cached.
     pub denoised: Option<Arc<Twin>>,
+    /// The "Remove Chromatic Aberration" choice these pixels were developed with: a cached source is
+    /// only reused for a render that asks for the same choice (`false` for anything not a raw load).
+    pub ca_choice: bool,
+    /// The pixels carry the file's lateral-CA correction (a smart preview's stored flag; the decoder's
+    /// `info` carries it for a live load).
+    pub raw_lens_ca: bool,
 }
 
 impl DecodedSource {
     pub fn new(image: Arc<Rgb32f>, info: Option<SourceInfo>) -> Self {
-        DecodedSource { image, info, camera_tone: None, denoised: None }
+        DecodedSource { image, info, camera_tone: None, denoised: None, ca_choice: false, raw_lens_ca: false }
+    }
+
+    /// [`Self::new`] recording the lateral-CA choice the source was developed with.
+    pub fn with_ca_choice(mut self, ca_choice: bool) -> Self {
+        self.ca_choice = ca_choice;
+        self
     }
 
     /// The picture to develop for a Denoise `amount` (0 to 1, see [`DevelopSettings::denoise_amount`]): the plain one,
@@ -216,7 +230,11 @@ impl DecodedSource {
     /// What to render these pixels against: the decoder's facts, else `header` (the catalog's)
     /// with any stored camera tone curve.
     pub fn info_or(&self, header: SourceInfo) -> SourceInfo {
-        self.info.clone().unwrap_or_else(|| SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), ..header })
+        // a live decode carries the CA flag in its own facts; a smart preview records it separately
+        if let Some(info) = self.info.clone() {
+            return info;
+        }
+        SourceInfo { camera_tone: self.camera_tone.or(header.camera_tone), raw_lens_ca: self.raw_lens_ca || header.raw_lens_ca, ..header }
     }
 }
 
@@ -231,6 +249,8 @@ pub enum SourceRef {
         path: String,
         max_edge: usize,
         loader: Option<FileLoader>,
+        /// Apply the file's lateral-CA table to the CFA before demosaic ("Remove Chromatic Aberration").
+        lateral_ca: bool,
         /// The photo's smart preview, used when the original can't be read (offline drive). The
         /// UI thread never checks whether the original is there; the render worker finds out.
         fallback: Option<std::path::PathBuf>,
@@ -240,6 +260,8 @@ pub enum SourceRef {
     /// A smart preview standing in for a missing original.
     Smart {
         path: std::path::PathBuf,
+        /// The "Remove Chromatic Aberration" choice of the render it stands in for.
+        lateral_ca: bool,
     },
 }
 
@@ -252,9 +274,10 @@ impl SourceRef {
         let image = match self {
             SourceRef::Loaded(a) => return Ok((**a).clone()),
             SourceRef::Demo { scene, max_edge } => crate::demo::scene_pixels(scene, *max_edge)?,
-            SourceRef::File { path, max_edge, loader, fallback, denoise } => {
+            SourceRef::File { path, max_edge, loader, lateral_ca, fallback, denoise } => {
                 let plain = || match loader {
-                    Some(l) => l(path, *max_edge).map(|(image, info)| DecodedSource::new(Arc::new(image), Some(info))),
+                    Some(l) => l(path, *max_edge, *lateral_ca)
+                        .map(|(image, info)| DecodedSource::new(Arc::new(image), Some(info)).with_ca_choice(*lateral_ca)),
                     None => Err(format!("no decoder available for {path}")),
                 };
                 // the denoised picture comes with the plain one from a single decode; when it cannot be read the
@@ -268,7 +291,7 @@ impl SourceRef {
                             None => true,
                         };
                         if made {
-                            pair(path, *max_edge, spec).and_then(|(image, twin, info)| {
+                            pair(path, *max_edge, *lateral_ca, spec).and_then(|(image, twin, info)| {
                                 if spec.make.is_some() && twin.is_none() {
                                     return Err("the cached AI Denoise picture could not be read; clear the denoise cache and retry".into());
                                 }
@@ -277,6 +300,8 @@ impl SourceRef {
                                     info: Some(info),
                                     camera_tone: None,
                                     denoised: twin.map(|t| Arc::new(Twin::new(Arc::new(t)))),
+                                    ca_choice: *lateral_ca,
+                                    raw_lens_ca: false,
                                 })
                             })
                         } else {
@@ -289,13 +314,13 @@ impl SourceRef {
                 return match (r, fallback) {
                     #[cfg(not(target_arch = "wasm32"))]
                     (Err(e), Some(sp)) if denoise.as_ref().is_none_or(|(spec, _)| spec.make.is_none()) && crate::smart::is_valid(sp) => {
-                        crate::smart::load(sp).map_err(|e2| format!("{e}; smart preview: {e2}"))
+                        crate::smart::load(sp, *lateral_ca).map_err(|e2| format!("{e}; smart preview: {e2}"))
                     }
                     (r, _) => r,
                 };
             }
             #[cfg(not(target_arch = "wasm32"))]
-            SourceRef::Smart { path } => return crate::smart::load(path),
+            SourceRef::Smart { path, lateral_ca } => return crate::smart::load(path, *lateral_ca),
             #[cfg(target_arch = "wasm32")]
             SourceRef::Smart { .. } => return Err("smart previews are not available here".into()),
         };
@@ -603,26 +628,32 @@ impl MediaCache {
 
     /// How to load photo `p` at `level`: from the cache when its source is there, else from its file (with its denoised
     /// picture beside it when it has one), its smart preview or the demo scene.
-    pub fn source_ref(&mut self, p: &Photo, level: SourceLevel) -> SourceRef {
-        self.source_ref_with(p, level, true)
+    /// How to render a photo's own pixels. `lateral_ca` is the render's "Remove Chromatic Aberration" choice;
+    /// a cached source developed with another choice is not reused ([`DecodedSource::ca_choice`]).
+    pub fn source_ref(&mut self, p: &Photo, level: SourceLevel, lateral_ca: bool) -> SourceRef {
+        self.source_ref_with(p, level, true, lateral_ca)
     }
 
     /// [`Self::source_ref`] that never takes a decoded source from memory: for a job that needs something the cached
     /// one lacks (an export, whose denoised picture is made when it runs).
-    pub fn source_ref_uncached(&mut self, p: &Photo, level: SourceLevel) -> SourceRef {
-        self.source_ref_with(p, level, false)
+    pub fn source_ref_uncached(&mut self, p: &Photo, level: SourceLevel, lateral_ca: bool) -> SourceRef {
+        self.source_ref_with(p, level, false, lateral_ca)
     }
 
-    fn source_ref_with(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
-        let mut r = self.source_ref_plain(p, level, cached);
+    fn source_ref_with(&mut self, p: &Photo, level: SourceLevel, cached: bool, lateral_ca: bool) -> SourceRef {
+        let mut r = self.source_ref_plain(p, level, cached, lateral_ca);
         if let (SourceRef::File { denoise, .. }, Some((spec, loader))) = (&mut r, self.denoise.get(p.id)) {
             *denoise = Some((spec.clone(), loader.clone()));
         }
         r
     }
 
-    fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool) -> SourceRef {
-        if cached && let Some(a) = self.get_source(p.id, level) {
+    fn source_ref_plain(&mut self, p: &Photo, level: SourceLevel, cached: bool, lateral_ca: bool) -> SourceRef {
+        // a source cached for the other "Remove Chromatic Aberration" choice cannot stand in: reload it
+        if cached
+            && let Some(a) = self.get_source(p.id, level)
+            && a.ca_choice == lateral_ca
+        {
             return SourceRef::Loaded(Box::new(a));
         }
         // Procedural scenes have a nominal size: "full" is that size, not unbounded.
@@ -641,20 +672,20 @@ impl MediaCache {
             // (a proxy cut short fails to load, like the offline original; the worker's fallback
             // in `SourceRef::load` only uses a proxy that passes `smart::is_valid`)
             if self.availability.is_offline(path) && self.availability.exists(&sp.to_string_lossy()) == Some(true) {
-                return SourceRef::Smart { path: sp };
+                return SourceRef::Smart { path: sp, lateral_ca };
             }
-            let mut r = self.origin_ref(&p.source, max_edge);
+            let mut r = self.origin_ref(&p.source, max_edge, lateral_ca);
             if let SourceRef::File { fallback, .. } = &mut r {
                 *fallback = Some(sp);
             }
             return r;
         }
-        self.origin_ref(&p.source, max_edge)
+        self.origin_ref(&p.source, max_edge, lateral_ca)
     }
 
     /// How to load `origin` at most `max_edge` pixels long, ignoring decoded sources in memory (a
-    /// render worker in another wasm instance builds its sources from this).
-    pub fn origin_ref(&mut self, origin: &Source, max_edge: usize) -> SourceRef {
+    /// render worker in another wasm instance builds its sources from this). `lateral_ca` as [`Self::source_ref`].
+    pub fn origin_ref(&mut self, origin: &Source, max_edge: usize, lateral_ca: bool) -> SourceRef {
         match origin {
             Source::Demo { scene } => {
                 if self.scenes.is_empty() {
@@ -662,11 +693,11 @@ impl MediaCache {
                 }
                 match self.scenes.iter().find(|s| s.id == *scene) {
                     Some(s) => SourceRef::Demo { scene: Box::new(s.clone()), max_edge },
-                    None => SourceRef::File { path: format!("demo:{scene}"), max_edge, loader: None, fallback: None, denoise: None },
+                    None => SourceRef::File { path: format!("demo:{scene}"), max_edge, loader: None, lateral_ca, fallback: None, denoise: None },
                 }
             }
             Source::File { path } => {
-                SourceRef::File { path: path.clone(), max_edge, loader: self.file_loader.clone(), fallback: None, denoise: None }
+                SourceRef::File { path: path.clone(), max_edge, loader: self.file_loader.clone(), lateral_ca, fallback: None, denoise: None }
             }
         }
     }
@@ -1076,7 +1107,7 @@ impl crate::Session {
         } else {
             source_edge_needed(&p, &settings, apply_crop, max_w.max(max_h))
         });
-        let source = self.media.source_ref(&p, level);
+        let source = self.media.source_ref(&p, level, settings.optics_remove_ca());
         let request = RenderRequest { apply_crop, ..RenderRequest::fit(max_w, max_h) };
         // the photo id is part of the key: two photos with the same settings and size must not
         // share a result (a view slot showing photo A would otherwise look current for photo B)
@@ -1153,7 +1184,7 @@ impl crate::Session {
         let p = self.catalog.photo(id)?.clone();
         let edge = edge.clamp(16, SourceLevel::Thumb.max_edge());
         let level = SourceLevel::Thumb;
-        let source = self.media.source_ref(&p, level);
+        let source = self.media.source_ref(&p, level, settings.optics_remove_ca());
         let ck = Self::variant_key(&p, settings, edge);
         Some(RenderJob {
             request_id: 0,
@@ -1199,7 +1230,7 @@ impl crate::Session {
         // pixels along the long edge that leave `edge` across the crop
         let needed = (edge as f64 * w.max(h) / side).ceil().min(SourceLevel::Preview.max_edge() as f64);
         let level = SourceLevel::for_size(needed as usize);
-        let source = self.media.source_ref(&p, level);
+        let source = self.media.source_ref(&p, level, settings.optics_remove_ca());
         let ck = Self::variant_key(&p, &settings, edge);
         Some(RenderJob {
             request_id: 0,
@@ -1440,7 +1471,7 @@ impl crate::Session {
         // background queue has not got to it. (A source kept in memory may lack the picture, so the job reads the file.)
         if let Some(wanted) = self.denoise_for_export(id, &job.settings)? {
             let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
-            job.source = self.media.source_ref_uncached(&p, job.level);
+            job.source = self.media.source_ref_uncached(&p, job.level, job.settings.optics_remove_ca());
             if let SourceRef::File { denoise, .. } = &mut job.source {
                 *denoise = Some(wanted);
             }
@@ -1460,7 +1491,7 @@ impl crate::Session {
     /// The source proxy for pixel-statistics commands (auto tone/WB), loading synchronously.
     pub fn source_now(&mut self, id: PhotoId, level: SourceLevel) -> Result<Arc<Rgb32f>, String> {
         let p = self.catalog.photo(id).ok_or("no such photo")?.clone();
-        let r = self.media.source_ref(&p, level).load_source()?;
+        let r = self.media.source_ref(&p, level, p.develop.optics_remove_ca()).load_source()?;
         let image = r.image.clone();
         if let Some(info) = &r.info {
             self.learn_as_shot_wb(id, info);
@@ -1505,6 +1536,23 @@ mod thumbnail_hash_tests {
         let p = Photo::new(PhotoId(1), Source::File { path: "hash-fixture.jpg".into() }, "fixture.jpg", "JPEG", 6000, 4000, "2026-01-01");
         s.catalog.apply(Op::AddPhoto { photo: Box::new(p) }).unwrap();
         s
+    }
+
+    /// The "Remove Chromatic Aberration" checkbox reaches the source load: the render job asks for the file's CA
+    /// table exactly when the photo's settings say to (on by default), and not otherwise.
+    #[test]
+    fn the_remove_ca_checkbox_reaches_the_loaded_source() {
+        let mut s = session();
+        let ask = |s: &mut crate::Session| match s.render_job(PhotoId(1), 256, 256, false, true).unwrap().source {
+            SourceRef::File { lateral_ca, .. } => lateral_ca,
+            _ => panic!("a fresh photo loads from its file"),
+        };
+        assert!(ask(&mut s), "on by default");
+        let mut off = (*s.catalog.photo(PhotoId(1)).unwrap().develop).clone();
+        off.optics.remove_ca = false;
+        let op = s.develop_op(PhotoId(1), off, "off").unwrap();
+        s.catalog.apply(op).unwrap();
+        assert!(!ask(&mut s), "off: the source is developed without the file's table");
     }
     #[test]
     fn hashes_match_uncached_keys_and_are_not_recomputed_for_sizes_metadata_or_before() {
@@ -1571,7 +1619,7 @@ mod thumbnail_hash_tests {
     #[test]
     fn source_from_before_content_reload_is_not_accepted() {
         let mut s = session();
-        s.media.file_loader = Some(Arc::new(|_, _| Ok((Rgb32f::new(8, 8), SourceInfo::default()))));
+        s.media.file_loader = Some(Arc::new(|_, _, _| Ok((Rgb32f::new(8, 8), SourceInfo::default()))));
         let old = s.thumb_job(PhotoId(1), 256).unwrap().run();
         assert!(old.loaded.is_some());
         s.catalog
@@ -1640,11 +1688,12 @@ mod tests {
         job.source = SourceRef::File {
             path: "synthetic.arw".into(),
             max_edge: 64,
-            loader: Some(Arc::new(move |_, _| {
+            loader: Some(Arc::new(move |_, _, _| {
                 let mut image = Rgb32f::new(64, 64);
                 image.data.fill([0.1; 3]);
                 Ok((image, loaded_info.clone()))
             })),
+            lateral_ca: true,
             fallback: None,
             denoise: None,
         };
@@ -1655,7 +1704,7 @@ mod tests {
         let expected = lightcraft_pipeline::render(&r.loaded.as_ref().unwrap().image, &info, &job.settings, &job.request);
         assert_eq!(r.rendered.as_ref().unwrap().image.data, expected.image.data);
         s.accept(&r);
-        job.source = s.media.source_ref(s.catalog.photo(id).unwrap(), job.level);
+        job.source = s.media.source_ref(s.catalog.photo(id).unwrap(), job.level, job.settings.optics_remove_ca());
         let again = job.run();
         assert!(again.loaded.is_none());
         assert_eq!(r.rendered.unwrap().image.data, again.rendered.unwrap().image.data);

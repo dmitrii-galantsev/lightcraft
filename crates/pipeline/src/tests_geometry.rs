@@ -119,18 +119,40 @@ fn fringe(img: &Rgba8) -> f64 {
 fn remove_ca_aligns_colour_planes() {
     let (w, h) = (640usize, 420usize);
     let src = ca_source(w, h, 0.005, -0.004);
-    let before = render(&src, &SourceInfo::default(), &DevelopSettings::default(), &RenderRequest::fit(w, h)).image;
-    let mut s = DevelopSettings::default();
-    s.optics.remove_ca = true;
-    let after = render(&src, &SourceInfo::default(), &s, &RenderRequest::fit(w, h)).image;
+    // "Remove Chromatic Aberration" is on by default now, so the off render asks for it off
+    let mut off = DevelopSettings::default();
+    off.optics.remove_ca = false;
+    let before = render(&src, &SourceInfo::default(), &off, &RenderRequest::fit(w, h)).image;
+    let after = render(&src, &SourceInfo::default(), &DevelopSettings::default(), &RenderRequest::fit(w, h)).image;
     let (fb, fa) = (fringe(&before), fringe(&after));
     assert!(fa < fb * 0.35, "fringing {fb:.2} → {fa:.2}");
     // manual sliders can do the same: +ca_red shrinks... the red plane is sampled further out
     let mut m = DevelopSettings::default();
+    m.optics.remove_ca = false; // manual only: the automatic estimate stays out of it
     m.optics.ca_red = 0.005 / 0.003 * 100.0;
     m.optics.ca_blue = -0.004 / 0.003 * 100.0;
     let manual = render(&src, &SourceInfo::default(), &m, &RenderRequest::fit(w, h)).image;
     assert!(fringe(&manual) < fb * 0.35, "manual {:.2}", fringe(&manual));
+}
+
+/// The estimator only stands in when the file had no usable table: a source the table already corrected
+/// (`SourceInfo::raw_lens_ca`) is never estimated again. With the checkbox off, neither runs.
+#[test]
+fn the_files_own_ca_is_never_estimated_again() {
+    let (w, h) = (640usize, 420usize);
+    let src = ca_source(w, h, 0.005, -0.004);
+    let req = RenderRequest::fit(w, h);
+    let on = DevelopSettings::default();
+    let mut off = DevelopSettings::default();
+    off.optics.remove_ca = false;
+    let corrected = SourceInfo { raw_lens_ca: true, ..Default::default() };
+    let uncorrected = render(&src, &SourceInfo::default(), &off, &req).image;
+    let estimated = render(&src, &SourceInfo::default(), &on, &req).image;
+    let skipped = render(&src, &corrected, &on, &req).image;
+    assert!(fringe(&estimated) < fringe(&uncorrected) * 0.35, "the estimator corrects an uncorrected source");
+    assert!(fringe(&skipped) > fringe(&estimated), "a table-corrected source is not estimated again");
+    // off: the flag changes nothing at all
+    assert_eq!(uncorrected.data, render(&src, &corrected, &off, &req).image.data);
 }
 
 #[test]

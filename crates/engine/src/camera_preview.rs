@@ -1843,7 +1843,7 @@ mod tests {
             eprintln!("{name}: own matrices {own}, JPEG fit {}, spectral {spectral}", fitted.is_some());
             assert_eq!(raw.color != before, spectral, "{name}");
             assert_eq!(t.matrix_is_fallback, !own && !spectral, "{name}");
-            let (_, info) = crate::files::load_bytes(&bytes, 400).unwrap();
+            let (_, info) = crate::files::load_bytes(&bytes, 400, true).unwrap();
             assert_eq!(info.camera_tone.is_some(), fitted.is_some(), "{name}");
             // white balance: relative only without matrices anywhere; a covered camera edits in Kelvin, through the
             // spectral matrices, whichever look it got (issue #730)
@@ -1948,7 +1948,7 @@ mod tests {
         let look = fit_preview(&raw, &bytes, &transform).0;
         eprintln!("R100 guarded colour fit accepted: {}", look.is_some());
         assert!(look.is_some(), "this R100 corpus photo has enough matching colour after camera-framing alignment");
-        let (_, info) = crate::files::load_bytes(&bytes, 400).unwrap();
+        let (_, info) = crate::files::load_bytes(&bytes, 400, true).unwrap();
         assert!(info.raw && info.relative_wb);
         assert_eq!((info.as_shot_temp, info.as_shot_tint), (6500.0, 0.0));
         assert_eq!(info.camera_tone.is_some(), look.is_some());
@@ -2000,7 +2000,7 @@ mod tests {
             eprintln!("skip: {} absent", path.display());
             return;
         };
-        let (_, info) = crate::files::load_bytes(&bytes, 400).unwrap();
+        let (_, info) = crate::files::load_bytes(&bytes, 400, true).unwrap();
         assert!(info.camera_tone.is_some(), "no camera look fitted");
         assert!(info.relative_wb && info.as_shot_temp == 6500.0 && info.as_shot_tint == 0.0);
     }
@@ -2022,7 +2022,7 @@ mod tests {
                 }
                 Err(e) => panic!("{name}: {e}"),
             };
-            let (img, info) = crate::files::load_bytes(&bytes, 400).unwrap();
+            let (img, info) = crate::files::load_bytes(&bytes, 400, true).unwrap();
             assert_eq!((img.width, img.height), (400, 267), "{name}: framed in the default crop");
             assert!(info.camera_tone.is_some(), "{name}: no camera look fitted");
             assert!(info.relative_wb && info.as_shot_temp == 6500.0 && info.as_shot_tint == 0.0, "{name}");
@@ -2041,7 +2041,7 @@ mod tests {
             eprintln!("skip: {} absent", path.display());
             return;
         };
-        let (img, info) = crate::files::load_bytes(&bytes, 400).unwrap();
+        let (img, info) = crate::files::load_bytes(&bytes, 400, true).unwrap();
         assert_eq!((img.width, img.height), (400, 300), "framed in the in-camera aspect ratio");
         assert!(info.camera_tone.is_some(), "no camera look fitted");
         assert!(info.relative_wb && info.as_shot_temp == 6500.0 && info.as_shot_tint == 0.0);
@@ -2060,7 +2060,7 @@ mod tests {
             eprintln!("skip: {} absent", path.display());
             return;
         };
-        let (_, info) = crate::files::load_bytes(&bytes, 400).unwrap();
+        let (_, info) = crate::files::load_bytes(&bytes, 400, true).unwrap();
         assert!(info.camera_tone.is_some(), "no camera look fitted");
     }
 
@@ -2238,7 +2238,7 @@ mod tests {
             } else {
                 assert_eq!((look.matrix, &look.hue_sat, look.tone), (fitted.matrix, &fitted.hue_sat, fitted.tone), "{name}");
             }
-            let (_, info) = crate::files::load_bytes(&bytes, 400).unwrap();
+            let (_, info) = crate::files::load_bytes(&bytes, 400, true).unwrap();
             assert_eq!(info.camera_tone, Some(look.tone), "{name}");
         }
     }
@@ -2305,8 +2305,8 @@ mod tests {
         {
             let Ok(bytes) = std::fs::read(dir.join(name)) else { continue };
             let header = crate::files::probe_bytes(name, &bytes).unwrap();
-            let (_, small) = crate::files::load_bytes(&bytes, 400).unwrap();
-            let (_, large) = crate::files::load_bytes(&bytes, 1200).unwrap();
+            let (_, small) = crate::files::load_bytes(&bytes, 400, true).unwrap();
+            let (_, large) = crate::files::load_bytes(&bytes, 1200, true).unwrap();
             assert_eq!(small.camera_tone.is_some(), accepted, "{name}");
             assert_eq!(small.camera_tone, large.camera_tone, "{name}: resolution changed the fit");
             assert_eq!(header.as_shot_wb, Some((small.as_shot_temp, small.as_shot_tint)), "{name}");

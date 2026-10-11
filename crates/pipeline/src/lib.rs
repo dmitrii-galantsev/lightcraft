@@ -73,6 +73,9 @@ pub struct CameraColor {
 pub struct SourceInfo {
     /// Lens corrections embedded in the file (DNG opcodes), relative to the EXIF-oriented source.
     pub lens: Option<lightcraft_develop::EmbeddedLens>,
+    /// The source's CFA was lateral-CA-corrected from the file's own table before demosaic: the pipeline must
+    /// then **not** also estimate and apply a post-demosaic correction (`optics.remove_ca`, never both).
+    pub raw_lens_ca: bool,
     /// Raw sources use absolute Kelvin white balance; rendered sources use a relative scale around
     /// their as-shot white.
     pub raw: bool,
@@ -102,6 +105,7 @@ impl Default for SourceInfo {
             as_shot_temp: 6500.0,
             as_shot_tint: 0.0,
             lens: None,
+            raw_lens_ca: false,
             relative_wb: false,
             legacy_relative_wb: false,
             camera_color: None,
@@ -227,7 +231,8 @@ pub fn native_output_size(src_w: usize, src_h: usize, s: &DevelopSettings) -> (f
 /// The geometric frame `render` uses for `src` (lens data, automatic CA estimate included).
 pub fn frame_for(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, apply_crop: bool) -> geometry::Frame {
     let mut frame = geometry::Frame::with_lens(src.width, src.height, s, apply_crop, info.lens.as_ref());
-    if s.optics.remove_ca && s.section_enabled("optics") {
+    // the table's own CA, when the file recorded one, is already in the CFA (never both: `raw_lens_ca`)
+    if s.optics_remove_ca() && !info.raw_lens_ca {
         frame.add_lateral_ca(optics::estimate_lateral_ca(src));
     }
     frame
