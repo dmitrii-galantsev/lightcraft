@@ -22,10 +22,14 @@ Given a scan, the conversion
 4. applies a **camera profile** when the user supplies one, and
 5. encodes the result — producing a positive in the pipeline's normal scene-linear space.
 
-The pipeline runs it as its **first scene-linear stage** (`lightcraft_pipeline::negative`), before
-white balance and tone. Because the confirmed window acts on the scan's *encoded* values, the stage
-round-trips the scene-linear Rec.2020 buffer through encoded sRGB and back, so the rest of the
-pipeline is unchanged.
+The pipeline runs the conversion in its **scene-linear stage** (`lightcraft_pipeline::negative`). With
+the conversion **on**, the frame's white balance is applied **first**, on the negative — as Lightroom
+and the plugin do, and as the raw camera-space white balance requires (a raw white balance re-develops
+camera pixels; run on the already-inverted positive it re-develops a positive as if it were a
+negative and clips the channels). The film base is measured from the as-shot scan before that white
+balance moves it. The conversion then inverts; tone and the remaining edits follow. Because the
+confirmed window acts on the scan's *encoded* values, the stage round-trips the scene-linear Rec.2020
+buffer through encoded sRGB and back, so the rest of the pipeline is unchanged.
 
 ## The maths, and where it lives
 
@@ -118,10 +122,17 @@ only partly pinned.
 The camera profile is an Adobe DNG Camera Profile (`.dcp`). **LightCraft ships none** — the same
 rule the project applies to AI model weights. `develop.negativeProfile {"path": "…"}` points at a
 `.dcp` the user owns; `lightcraft_negative::profiles::get` reads and validates it once per process.
-When the path is empty, missing, oversized, unreadable or malformed, the profile half is simply
-skipped (logged once) and the conversion still runs — no error the render has to handle. The preset
+Setting a path that the colour half cannot use — no `ColorMatrix1`, a 3×4 (four-channel/RGBE)
+`ColorMatrix1`, or a tone curve that does not build — **errors**, naming the reason, rather than
+accepting a profile the render would ignore. When the path is empty, the profile half is skipped by
+design; a path that has since gone missing, oversized or malformed at render time is skipped with a
+log line (the render has no error to raise) and the conversion still runs. The preset
 parameters are modelled directly (region deltas, density, clips, tone profile, fade/glow, LUT); no
 preset file is read.
+
+Every profile the reader accepts is checked end to end against the user's own Negative Lab Pro set
+(read-only, by path) in `crates/negative/src/profiles.rs`'s `real_negative_lab_profiles_*` test: all
+2589 files parse, and the 24 four-channel-camera profiles are the ones rejected loudly.
 
 ## Gaps (carried forward honestly)
 
@@ -144,8 +155,11 @@ parameter where a formula is unknown rather than inventing one.
 3. **The preset maths is behavioural.** `addDensity`, the clips, the tone-profile shapes, `LabFade` /
    `LabGlow` and the LUT gains are the reverse-engineering project's hypotheses, not fitted values.
 4. **The profile stage order** (matrix → HueSatMap → LookTable → baseline exposure → tone curve) is a
-   hypothesis; the shot white for the profile is fixed to D50. Four-channel-camera profiles (3×4
-   `ColorMatrix`) are refused rather than guessed.
+   hypothesis, and the profile is applied **after the invert**, on the display-encoded positive,
+   with the shot white fixed to D50. A real camera profile's `ColorMatrix` maps *camera* values, so
+   applied to the inverted, encoded positive it casts: on the user's ILCE-7M4 v2.3 profile a neutral
+   input is pushed to blue (`[0.5,0.5,0.5] → [0.79,0.34,0.68]` through the matrix alone). Four-channel-camera
+   profiles (3×4 `ColorMatrix`) are refused rather than guessed.
 5. **NLP's LUTs, roll analysis and snapshots are out of scope** and not implemented. No plugin data
    is read, decompiled or shipped.
 

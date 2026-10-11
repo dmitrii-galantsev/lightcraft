@@ -617,6 +617,45 @@ fn normalize_wb_marks_kelvin_raws_and_converts_relative_values_once() {
     }
 }
 
+#[test]
+fn a_negative_is_white_balanced_before_it_is_inverted() {
+    use lightcraft_develop::WbMode;
+    // A raw film scan under a warm backlight with the white balance moved off the as-shot white.
+    // `lin_cpu` must run the white balance on the negative and then invert; the reverse order
+    // re-develops the already-inverted positive in camera space and is a different image.
+    let cc = camera_color(5500.0, 0.0);
+    let info = SourceInfo { raw: true, as_shot_temp: 5500.0, as_shot_tint: 0.0, camera_color: Some(cc), ..Default::default() };
+    let src = Rgb32f::filled(24, 24, [0.18, 0.12, 0.06]);
+    let mut s = DevelopSettings::default();
+    s.negative.enabled = true;
+    // an explicit base: `lin_cpu` then does not measure, so the two compositions below are exact
+    (s.negative.base_r, s.negative.base_g, s.negative.base_b) = (0.72, 0.52, 0.31);
+    (s.negative.dark_r, s.negative.dark_g, s.negative.dark_b) = (0.05, 0.03, 0.01);
+    s.negative.tone_profile = 1;
+    (s.wb.mode, s.wb.temp, s.wb.tint) = (WbMode::Custom, 3000.0, 0.0);
+
+    let req = RenderRequest::fit(24, 24);
+    let plan = crate::plan(&src, &info, &s, &req);
+    let sampled = plan.frame.sample(&src, plan.w, plan.h);
+    let mut got = sampled.clone();
+    crate::lin_cpu(&mut got, &info, &plan);
+
+    // the same stages, in the order the fix claims
+    let mut wb_first = sampled.clone();
+    crate::local::white_balance(&mut wb_first, &info, &s);
+    crate::negative::apply(&mut wb_first, &s);
+    // and in the order that blew the channels on a real scan
+    let mut invert_first = sampled.clone();
+    crate::negative::apply(&mut invert_first, &s);
+    crate::local::white_balance(&mut invert_first, &info, &s);
+
+    let max_diff = |a: &Rgb32f, b: &Rgb32f| {
+        a.data.iter().zip(&b.data).map(|(p, q)| (0..3).map(|c| (p[c] - q[c]).abs()).fold(0.0f32, f32::max)).fold(0.0f32, f32::max)
+    };
+    assert!(max_diff(&got, &wb_first) < 1e-4, "lin_cpu is not white-balance-then-invert (max diff {})", max_diff(&got, &wb_first));
+    assert!(max_diff(&got, &invert_first) > 1e-3, "the two orders must differ on this input, or the test proves nothing");
+}
+
 /// A dual-illuminant (A / D65) camera colour model, its pixels developed for `temp` / `tint`.
 fn camera_color(temp: f64, tint: f64) -> std::sync::Arc<crate::CameraColor> {
     use lightcraft_color::Mat3;

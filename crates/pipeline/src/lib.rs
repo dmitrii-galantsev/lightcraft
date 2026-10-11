@@ -473,12 +473,33 @@ pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
 /// scene-linear stage, in place.
 pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     let s = &*p.settings;
-    // the negative conversion first: it turns the scan into the positive the rest of the chain
-    // (white balance, tone, colour) then edits
-    negative::apply(img, s);
-    // (before the white balance: the gain's input is the as-shot development, as in the file)
-    local_tone::apply(img, info, p);
-    local::white_balance(img, info, s);
+    // A film negative's white balance is the scan/film-base illuminant balance, and it belongs on
+    // the *negative* before the invert — as Lightroom and the plugin apply it. For a raw source,
+    // wb_matrix_for re-develops the pixels in camera space; running that on the already-inverted
+    // positive re-develops a positive as if it were a negative and blows the channels (the blue
+    // channel in particular clips to white on a real scan).
+    if s.negative.enabled && s.section_enabled("negative") {
+        // The film base is a statistic of the as-shot scan, so measure it before the white
+        // balance moves the pixels (`develop.negativeMeasure` reads the same as-shot source).
+        let measured = (!s.negative.has_base()).then(|| {
+            let mut m = s.clone();
+            let b = lightcraft_negative::measure_base_linear_rec2020(img, m.negative.border as f32);
+            m.negative.base_r = b[0] as f64;
+            m.negative.base_g = b[1] as f64;
+            m.negative.base_b = b[2] as f64;
+            m
+        });
+        local::white_balance(img, info, s);
+        negative::apply(img, measured.as_ref().unwrap_or(s));
+        local_tone::apply(img, info, p);
+    } else {
+        // the negative conversion first: it turns the scan into the positive the rest of the chain
+        // (white balance, tone, colour) then edits
+        negative::apply(img, s);
+        // (before the white balance: the gain's input is the as-shot development, as in the file)
+        local_tone::apply(img, info, p);
+        local::white_balance(img, info, s);
+    }
     optics::defringe(img, s, p.px_per_long / optics::DEFRINGE_REF_LONG);
     spots::apply(img, &s.spots, &p.frame, p.px_per_long);
     redeye::apply(img, &p.eyes);

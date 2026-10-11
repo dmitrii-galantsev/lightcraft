@@ -144,10 +144,7 @@ mod tests {
         // Non-increasing tone-curve inputs would be dropped silently in `apply_profile`.
         let m = float_bytes(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
         let curve = float_bytes(&[0.0, 0.0, 0.0, 1.0]); // two points at the same input
-        let bytes = classic_tiff(&[
-            (crate::dcp::TAG_COLOR_MATRIX1, 11, 9, m),
-            (crate::dcp::TAG_PROFILE_TONE_CURVE, 11, 4, curve),
-        ]);
+        let bytes = classic_tiff(&[(crate::dcp::TAG_COLOR_MATRIX1, 11, 9, m), (crate::dcp::TAG_PROFILE_TONE_CURVE, 11, 4, curve)]);
         let err = parse(&bytes, "curve").unwrap_err();
         assert!(err.contains("tone curve"), "{err}");
     }
