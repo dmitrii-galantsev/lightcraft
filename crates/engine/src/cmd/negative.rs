@@ -181,6 +181,41 @@ pub fn specs() -> Vec<CommandSpec> {
             }
         ),
         cmd!(
+            "develop.negativeState",
+            "Negative Conversion State",
+            [],
+            None,
+            "{} — what the Negative section shows, read-only: the stored base and border, the base and dark endpoint this frame would measure (the same preview-level measurement `develop.negativeMeasure` / `develop.negativeDark` store), the ring the base was measured at (the frame's pick under auto; null when the frame shows no film-base ring and the outermost edge was used), and the resolved camera profile → {enabled, base, has_base, base_measured, border, ring, dark_auto, dark, dark_measured, profile: {path, name} | null}",
+            has_active,
+            |s, _| {
+                let c = "develop.negativeState";
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let d = (*s.develop_of(id).unwrap_or_default()).clone();
+                let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad(c, e))?;
+                let (base_measured, ring) = lightcraft_negative::measure_base_linear_rec2020_full(&src, d.negative.border as f32);
+                let profile = (!d.negative.profile.trim().is_empty()).then(|| {
+                    let path = d.negative.profile.trim().to_string();
+                    let name = match lightcraft_negative::profiles::get(&path) {
+                        Some(dcp) => lightcraft_negative::profiles::describe(&dcp),
+                        None => std::path::Path::new(&path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone()),
+                    };
+                    json!({"path": path, "name": name})
+                });
+                Ok(json!({
+                    "enabled": d.negative.enabled,
+                    "base": [d.negative.base_r, d.negative.base_g, d.negative.base_b],
+                    "has_base": d.negative.has_base(),
+                    "base_measured": [base_measured[0], base_measured[1], base_measured[2]],
+                    "border": d.negative.border,
+                    "ring": ring,
+                    "dark_auto": d.negative.dark_auto,
+                    "dark": [d.negative.dark_r, d.negative.dark_g, d.negative.dark_b],
+                    "dark_measured": measure_dark(s, c)?,
+                    "profile": profile,
+                }))
+            }
+        ),
+        cmd!(
             "develop.negativeProfiles",
             "Negative Camera Profiles",
             [],
@@ -276,6 +311,7 @@ mod tests {
             "develop.negative",
             "develop.negativeMeasure",
             "develop.negativeDark",
+            "develop.negativeState",
             "develop.negativeProfile",
             "develop.negativeProfiles",
             "develop.negativeProfileAuto",

@@ -94,6 +94,8 @@ mod tests_masking_layout;
 #[cfg(test)]
 mod tests_menubar;
 #[cfg(test)]
+mod tests_negative;
+#[cfg(test)]
 mod tests_offline;
 #[cfg(test)]
 mod tests_open_lightroom;
@@ -1482,6 +1484,9 @@ pub struct Caches {
     pub smart_problem_scans: usize,
     /// AI denoise: what the pump last saw, the model list and the downloads being watched.
     pub denoise: panels::denoise::Ui,
+    /// The Negative section's read-only frame measurements (`develop.negativeState`) for the photo
+    /// they were asked for, until the section asks again; a `Null` value caches "unavailable".
+    pub negative: Option<(lightcraft_catalog::PhotoId, std::sync::Arc<Value>)>,
     /// Bumped when a face model is installed, removed or chosen, so Settings re-reads the list at once.
     pub faces_epoch: u64,
     /// Face model downloads the user started, followed until installed (see `panels::faces::pump`).

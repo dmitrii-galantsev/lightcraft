@@ -256,9 +256,9 @@ controls! {
     "calibration.blueSat" => calibration.blue_sat, "Blue Saturation", Calibration, -100, 100, 0, 1, 0, Gradient { from: "#7a7a7a", to: "#3a60e0" };
     "crop.angle" => crop.geometry.angle, "Straighten", Geometry, -45, 45, 0, 0.01, 2, Centered;
     // ---- Negative (film-negative conversion; see lightcraft_negative and docs/negative-conversion.md)
-    "negative.baseR" => negative.base_r, "Base R", Negative, 0, 1, 0, 0.001, 4, Plain;
-    "negative.baseG" => negative.base_g, "Base G", Negative, 0, 1, 0, 0.001, 4, Plain;
-    "negative.baseB" => negative.base_b, "Base B", Negative, 0, 1, 0, 0.001, 4, Plain;
+    "negative.baseR" => negative.base_r, "Base R", Negative, 0, 1, 0, 0.001, 2, Plain;
+    "negative.baseG" => negative.base_g, "Base G", Negative, 0, 1, 0, 0.001, 2, Plain;
+    "negative.baseB" => negative.base_b, "Base B", Negative, 0, 1, 0, 0.001, 2, Plain;
     "negative.darkR" => negative.dark_r, "Dark Endpoint R", Negative, -0.1, 1, 7.17 / 255.0, 0.001, 4, Plain;
     "negative.darkG" => negative.dark_g, "Dark Endpoint G", Negative, -0.1, 1, 1.56 / 255.0, 0.001, 4, Plain;
     "negative.darkB" => negative.dark_b, "Dark Endpoint B", Negative, -0.1, 1, -0.89 / 255.0, 0.001, 4, Plain;

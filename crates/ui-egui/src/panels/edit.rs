@@ -430,52 +430,209 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
     });
     // Film-negative conversion: a scan of a negative becomes a positive (LR-EDIT-NEGATIVE).
     section(app, ui, &d, "negative", "Negative", |app, ui, d| {
-        let on = d.negative.enabled;
-        if text_button(ui, "negative-on", crate::i18n::tr("Convert Negative"), on).clicked() {
-            let _ = app.run("develop.negative", json!({}));
-        }
-        if text_button(ui, "negative-measure", crate::i18n::tr("Measure Film Base"), false).clicked() {
-            let _ = app.run("develop.negativeMeasure", json!({}));
-        }
-        // The camera profile is a .dcp the user owns — LightCraft ships none. The standard Camera Raw
-        // tree is searched; "Match this camera" picks the newest generation for the active camera.
-        sub_title(ui, crate::i18n::tr("Camera Profile"));
-        negative_profile_picker(app, ui, d);
-        sub_title(ui, crate::i18n::tr("Film Base"));
-        for id in ["negative.baseR", "negative.baseG", "negative.baseB"] {
-            control(app, ui, d, id, on);
-        }
-        control(app, ui, d, "negative.border", on);
-        sub_title(ui, crate::i18n::tr("Dark Endpoint"));
-        ui.horizontal(|ui| {
-            ui.add_space(24.0);
-            if text_button(ui, "negative-dark-auto", crate::i18n::tr("Auto (frame near-min)"), d.negative.dark_auto).clicked() {
-                let _ = app.run("develop.negativeDark", if d.negative.dark_auto { json!({"auto": false}) } else { json!({}) });
-            }
-        });
-        // The three sliders are an explicit override; they are inert while the frame is measured.
-        for id in ["negative.darkR", "negative.darkG", "negative.darkB"] {
-            control(app, ui, d, id, on && !d.negative.dark_auto);
-        }
-        sub_title(ui, crate::i18n::tr("Preset"));
-        for id in [
-            "negative.toneProfile",
-            "negative.density",
-            "negative.saturation",
-            "negative.blackClip",
-            "negative.whiteClip",
-            "negative.lut",
-            "negative.profileAmount",
-        ] {
-            control(app, ui, d, id, on);
-        }
-        ui.add_space(8.0);
+        negative_section(app, ui, d, id);
     });
     ui.add_space(40.0);
     // A pending numeric edit commits on blur before the explicit Reset takes precedence.
     if reset_clicked {
         let _ = app.run("develop.reset", json!({}));
     }
+}
+
+/// The Negative section, in reading order: the master switch with Measure beside it, the camera
+/// profile, the measured film base (the sliders are an override), the border ring and the dark
+/// endpoint (Auto measures the frame, Manual keeps three sliders), and the modelled preset
+/// vocabulary.
+fn negative_section(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, id: PhotoId) {
+    let t = Tokens::get(ui.ctx());
+    let n = &d.negative;
+    let mut state = negative_state(app, id);
+    let ring = state.as_ref().and_then(|s| s["ring"].as_f64());
+    let dark_measured = state.as_ref().and_then(|s| triple(&s["dark_measured"]));
+    let base_measured = state.as_ref().and_then(|s| triple(&s["base_measured"]));
+    let has_base = state.as_ref().and_then(|s| s["has_base"].as_bool()).unwrap_or(false);
+    let ask = |app: &mut LightcraftApp, id: PhotoId, state: &mut Option<std::sync::Arc<Value>>| *state = ask_negative_state(app, id);
+
+    // the master switch (primary), with the measure action under it and the ring it read beside it
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 6, bottom: 8 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            let r = crate::widgets::switch(ui, "negative", n.enabled, "Convert Negative");
+            ui.label(RichText::new(crate::i18n::tr("Convert Negative")).font(t.semibold(13.0)).color(t.text));
+            if r.clicked() {
+                let _ = app.run("develop.negative", json!({"enabled": !n.enabled}));
+                ask(app, id, &mut state);
+            }
+        });
+        ui.horizontal(|ui| {
+            if text_button(ui, "negative-measure", crate::i18n::tr("Measure Film Base"), false).clicked() {
+                let _ = app.run("develop.negativeMeasure", json!({}));
+                ask(app, id, &mut state);
+            }
+            let stat = match ring {
+                Some(b) => crate::i18n::tr_format!("ring {} %", ring_pct(b)),
+                None => crate::i18n::tr("no ring detected").to_string(),
+            };
+            ui.label(RichText::new(stat).font(t.font(11.5)).color(t.text_dim));
+        });
+    });
+
+    // The camera profile is a .dcp the user owns — LightCraft ships none. The standard Camera Raw
+    // tree is searched; "Match this camera" picks the newest generation for the active camera.
+    sub_title(ui, crate::i18n::tr("Camera Profile"));
+    negative_profile_picker(app, ui, d, state.as_deref());
+
+    // Film Base: what the border ring measured, which the three sliders override
+    sub_title(ui, crate::i18n::tr("Film Base"));
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 2 }).show(ui, |ui| {
+        ui.label(RichText::new(crate::i18n::tr("measured from the border ring — Auto unless you edit")).size(11.0).color(t.text_dim));
+    });
+    for (c, cid) in [(0, "negative.baseR"), (1, "negative.baseG"), (2, "negative.baseB")] {
+        let Some(spec) = controls::find(cid) else { continue };
+        let v = controls::get(d, cid).unwrap_or(spec.default);
+        let (dimmed, flagged) = base_flag(v, c, base_measured, has_base);
+        let out = crate::widgets::slider_look(
+            ui,
+            spec,
+            v,
+            n.enabled,
+            crate::widgets::SliderLook { dimmed, flagged, ..crate::widgets::SliderLook::default() },
+        );
+        apply_slider_out(app, spec, out, |app, v| app.run("develop.set", json!({"control": cid, "value": v})));
+    }
+
+    // Border: Auto is the slider's left end (the frame picks the ring; the header stat says which)
+    control(app, ui, d, "negative.border", n.enabled);
+
+    // Dark Endpoint: Auto measures the frame's near-min and shows it read-only; Manual keeps the
+    // three sliders, starting from what the frame measured
+    sub_title(ui, crate::i18n::tr("Dark Endpoint"));
+    {
+        let items = [("Auto (measure)", "auto"), ("Manual", "manual")];
+        let mut chosen = None;
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 2, bottom: 4 }).show(ui, |ui| {
+            chosen = crate::widgets::segmented(ui, "negativeDarkMode", &items, Some(if n.dark_auto { 0 } else { 1 }), 2);
+        });
+        if let Some(i) = chosen {
+            match (i, dark_measured) {
+                (0, _) => {
+                    let _ = app.run("develop.negativeDark", json!({"auto": true}));
+                }
+                // switching to Manual carries the measured endpoint over, so the sliders keep the
+                // value the conversion was using rather than the placeholder
+                (1, Some(k)) => {
+                    let _ = app.run("develop.negativeDark", json!({"dark": k}));
+                }
+                (1, None) => {
+                    let _ = app.run("develop.negativeDark", json!({"auto": false}));
+                }
+                _ => {}
+            }
+            ask(app, id, &mut state);
+        }
+    }
+    if n.dark_auto {
+        let spec = controls::find("negative.darkR");
+        match dark_measured {
+            Some(k) => {
+                for (c, ch) in [(0, "R"), (1, "G"), (2, "B")] {
+                    let value = spec.map(|s| crate::widgets::shown_value(s, k[c])).unwrap_or_else(|| "—".into());
+                    crate::widgets::readout_row(ui, &format!("negativeDark{ch}"), &format!("Dark Endpoint {ch}"), &value);
+                }
+            }
+            None => {
+                for ch in ["R", "G", "B"] {
+                    crate::widgets::readout_row(ui, &format!("negativeDark{ch}"), &format!("Dark Endpoint {ch}"), "—");
+                }
+            }
+        }
+    } else {
+        for cid in ["negative.darkR", "negative.darkG", "negative.darkB"] {
+            control(app, ui, d, cid, n.enabled);
+        }
+    }
+
+    // Preset: the modelled preset vocabulary, grouped the way it acts
+    sub_title(ui, crate::i18n::tr("Preset"));
+    for id in [
+        "negative.toneProfile",
+        "negative.lut",
+        "negative.processOrder",
+        "negative.density",
+        "negative.saturation",
+        "negative.blackClip",
+        "negative.whiteClip",
+        "negative.profileAmount",
+    ] {
+        control(app, ui, d, id, n.enabled);
+    }
+    sub_title(ui, crate::i18n::tr("Tone"));
+    for id in ["negative.lights", "negative.darks", "negative.whites", "negative.blacks"] {
+        control(app, ui, d, id, n.enabled);
+    }
+    sub_title(ui, crate::i18n::tr("Colour Shifts"));
+    for id in [
+        "negative.redCyanShadows",
+        "negative.redCyanMids",
+        "negative.redCyanHighs",
+        "negative.greenMagentaShadows",
+        "negative.greenMagentaMids",
+        "negative.greenMagentaHighs",
+        "negative.blueYellowShadows",
+        "negative.blueYellowMids",
+        "negative.blueYellowHighs",
+    ] {
+        control(app, ui, d, id, n.enabled);
+    }
+    sub_title(ui, crate::i18n::tr("Advanced"));
+    for id in ["negative.scanGamma", "negative.outputGamma", "negative.labFade", "negative.labGlow", "negative.shadowsRange", "negative.highsRange"] {
+        control(app, ui, d, id, n.enabled);
+    }
+    ui.add_space(8.0);
+}
+
+/// `(r, g, b)` of a JSON array of three numbers, or `None`.
+fn triple(v: &Value) -> Option<[f64; 3]> {
+    let a = v.as_array()?;
+    let v: Vec<f64> = a.iter().map(Value::as_f64).collect::<Option<_>>()?;
+    match v.as_slice() {
+        [r, g, b] => Some([*r, *g, *b]),
+        _ => None,
+    }
+}
+
+/// How a film-base slider reads against the frame's measurement: `(dimmed, flagged)`. Matching
+/// the measurement — or no measured base at all, the frame measuring at conversion time — reads
+/// dimmed, since it is the frame's value and not an edit; a channel that departed from the
+/// measurement is flagged.
+pub(crate) fn base_flag(v: f64, channel: usize, measured: Option<[f64; 3]>, has_base: bool) -> (bool, bool) {
+    let departs = has_base && measured.is_some_and(|m| (m[channel] - v).abs() > 0.0005);
+    (!departs, departs)
+}
+
+/// The ring inset as a percentage the panel reads ("ring 5 %", 0.055 → "5.5 %").
+fn ring_pct(b: f64) -> String {
+    let p = b * 100.0;
+    if (p - p.round()).abs() < 0.05 { format!("{:.0}", p) } else { format!("{:.1}", p) }
+}
+
+/// The Negative section's read-only frame measurements for the photo `id`, asked for once
+/// (`develop.negativeState`) and cached until the section changes something. A failed ask is
+/// cached as `Null`, so it is not retried every frame.
+fn negative_state(app: &mut LightcraftApp, id: PhotoId) -> Option<std::sync::Arc<Value>> {
+    if let Some((pid, v)) = &app.caches.negative
+        && *pid == id
+    {
+        return Some(v.clone());
+    }
+    let v = std::sync::Arc::new(app.run("develop.negativeState", json!({})).unwrap_or(Value::Null));
+    app.caches.negative = Some((id, v.clone()));
+    Some(v)
+}
+
+/// [`negative_state`], re-asked after the section changed something.
+fn ask_negative_state(app: &mut LightcraftApp, id: PhotoId) -> Option<std::sync::Arc<Value>> {
+    app.caches.negative = None;
+    negative_state(app, id)
 }
 
 /// The profile dropdown: Favorites, Recent, one submenu per group, then favourite toggle and
@@ -598,17 +755,23 @@ fn section(
 
 /// The negative camera-profile picker: the user's own `.dcp` tree under the standard Camera Raw
 /// folder, grouped by camera, with the current profile ticked. LightCraft bundles no profile, so
-/// this is the only way to reach the user's own (see `develop.negativeProfiles`).
-fn negative_profile_picker(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+/// this is the only way to reach the user's own (see `develop.negativeProfiles`). The button
+/// reads the resolved profile's name (or the file's), and "None" when no profile is set.
+fn negative_profile_picker(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings, resolved: Option<&Value>) {
     let cur = d.negative.profile.clone();
     let label = if cur.trim().is_empty() {
         crate::i18n::tr("None").to_string()
     } else {
-        std::path::Path::new(cur.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| cur.clone())
+        resolved
+            .and_then(|p| p["name"].as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| std::path::Path::new(cur.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| cur.clone()))
     };
+    let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
         ui.add_space(24.0);
-        let r = ui.menu_button(label, |ui| {
+        let r = crate::widgets::dropdown(ui, "negativeProfile", &label, t.font(15.0), if cur.trim().is_empty() { t.text_dim } else { t.text_label });
+        egui::Popup::menu(&r).show(|ui| {
             ui.set_min_width(300.0);
             let profiles: Vec<Value> =
                 app.run("develop.negativeProfiles", json!({})).ok().and_then(|v| v["profiles"].as_array().cloned()).unwrap_or_default();
@@ -640,7 +803,7 @@ fn negative_profile_picker(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &Devel
                 }
             });
         });
-        register(ui.ctx(), "negative-profile-menu", r.response.rect);
+        register(ui.ctx(), "negative-profile-menu", r.rect);
     });
 }
 

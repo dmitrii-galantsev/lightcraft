@@ -170,10 +170,17 @@ pub(crate) fn shown_value(spec: &ControlSpec, v: f64) -> String {
     if shown == "+0" || shown == "-0" { "0".to_string() } else { shown }
 }
 
-/// A Lightroom slider row (label + value above a track with a hollow ring thumb).
-/// Double-click the label or thumb to reset. Shift-drag = fine adjustment. Click the value to
-/// type one: Return or clicking away applies it, Esc keeps the old one.
-pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_override: Option<&str>) -> SliderOut {
+/// How a slider row is dressed beyond its spec: an overriding label, a dimmed read ("this is the
+/// measurement, not your edit") and an override flag (the user departed from the measurement).
+#[derive(Default)]
+pub struct SliderLook {
+    pub label: Option<String>,
+    pub dimmed: bool,
+    pub flagged: bool,
+}
+
+/// A slider row with a [`SliderLook`].
+pub fn slider_look(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, look: SliderLook) -> SliderOut {
     let t = Tokens::get(ui.ctx());
     let w = ui.available_width();
     let (row, _) = ui.allocate_exact_size(vec2(w, t.slider_row_h), Sense::hover());
@@ -190,7 +197,7 @@ pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_
         ui.data_mut(|d| d.insert_temp(focused_slider_key(), id));
     }
     // screen readers: a slider named after its control, with its value
-    let label_text = crate::i18n::tr(label_override.unwrap_or(spec.label)).to_string();
+    let label_text = crate::i18n::tr(look.label.as_deref().unwrap_or(spec.label)).to_string();
     resp.widget_info(|| egui::WidgetInfo::slider(enabled, value, label_text.clone()));
     let label_resp = ui.interact(label_rect, id.with("label"), Sense::click());
     register(ui.ctx(), format!("slider:{}", spec.id), track_rect);
@@ -340,11 +347,25 @@ pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_
     }
     // paint
     let hovered = resp.hovered() || resp.dragged();
-    let text_c = if enabled { t.text_label } else { t.text_disabled };
+    let text_c = if !enabled {
+        t.text_disabled
+    } else if look.flagged {
+        t.caution
+    } else if look.dimmed {
+        t.text_dim
+    } else {
+        t.text_label
+    };
     let p = ui.painter();
-    p.text(label_rect.left_center(), Align2::LEFT_CENTER, crate::i18n::tr(label_override.unwrap_or(spec.label)), t.font(12.5), text_c);
+    p.text(label_rect.left_center(), Align2::LEFT_CENTER, label_text, t.font(12.5), text_c);
     if typing.is_none() {
-        p.text(label_rect.right_center(), Align2::RIGHT_CENTER, shown_value(spec, v), t.font(12.5), text_c);
+        // laid out here so the value's width is known: the override flag sits before it
+        let galley = p.layout_no_wrap(shown_value(spec, v), t.font(12.5), text_c);
+        let vp = pos2(label_rect.right() - galley.size().x, label_rect.center().y);
+        p.galley(vp, galley, text_c);
+        if look.flagged {
+            p.circle_filled(pos2(vp.x - 6.0, label_rect.center().y), 2.5, t.caution);
+        }
         if enabled && value_resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
         }
@@ -355,6 +376,8 @@ pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_
     let p = ui.painter();
     let ring_c = if !enabled {
         t.text_disabled
+    } else if look.flagged {
+        t.caution
     } else if hovered {
         t.thumb_hover
     } else {
@@ -376,6 +399,12 @@ fn wheel_nudges(remainder: &mut f32, delta: f32) -> f64 {
     let steps = (total / POINTS_PER_STEP).trunc();
     *remainder = total - steps * POINTS_PER_STEP;
     f64::from(steps)
+}
+/// A Lightroom slider row (label + value above a track with a hollow ring thumb).
+/// Double-click the label or thumb to reset. Shift-drag = fine adjustment. Click the value to
+/// type one: Return or clicking away applies it, Esc keeps the old one.
+pub fn slider(ui: &mut Ui, spec: &ControlSpec, value: f64, enabled: bool, label_override: Option<&str>) -> SliderOut {
+    slider_look(ui, spec, value, enabled, SliderLook { label: label_override.map(Into::into), ..SliderLook::default() })
 }
 
 /// `value` moved by `steps` keyboard nudges: one nudge is about 1/200 of the range, a whole
@@ -476,6 +505,44 @@ pub fn text_button(ui: &mut Ui, id: &str, label: &str, active: bool) -> Response
     p.rect(r, CornerRadius::same(4), fill, Stroke::new(1.0, t.button_border), StrokeKind::Inside);
     p.galley(r.center() - galley.size() / 2.0, galley, t.text);
     resp
+}
+
+/// An on/off switch: a rounded track with a knob, the panel's primary toggles. Returns the
+/// response (`.clicked()` means the user asked to toggle); the caller owns the state.
+pub fn switch(ui: &mut Ui, id: &str, on: bool, tip: &str) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let (r, resp) = ui.allocate_exact_size(vec2(30.0, 18.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, crate::i18n::tr(tip)));
+    register(ui.ctx(), format!("switch:{id}"), r);
+    let p = ui.painter();
+    p.rect_filled(
+        r,
+        CornerRadius::same(9),
+        if on {
+            t.accent
+        } else if resp.hovered() {
+            t.hover
+        } else {
+            t.inset
+        },
+    );
+    let x = if on { r.right() - 7.5 } else { r.left() + 7.5 };
+    p.circle_filled(pos2(x, r.center().y), 7.0, if on { t.pick } else { t.text_disabled });
+    resp
+}
+
+/// A read-only value row where a slider row would be: the label left, the value right, in the
+/// disabled text colour — the value is measured, not set.
+pub fn readout_row(ui: &mut Ui, id: &str, label: &str, value: &str) {
+    let t = Tokens::get(ui.ctx());
+    let w = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(vec2(w, t.slider_row_h), Sense::hover());
+    let label_rect = Rect::from_min_size(pos2(row.left() + 24.0, row.top() + 4.0), vec2(w - 46.0, 18.0));
+    let p = ui.painter();
+    p.text(label_rect.left_center(), Align2::LEFT_CENTER, crate::i18n::tr(label), t.font(12.5), t.text_dim);
+    let galley = p.layout_no_wrap(value.to_string(), t.font(12.5), t.text_label);
+    p.galley(pos2(label_rect.right() - galley.size().x, label_rect.center().y), galley, t.text_label);
+    register(ui.ctx(), format!("readout:{id}"), row);
 }
 
 /// A segmented control: `labels` share the available width equally, `per_row` per row. Each segment is
