@@ -139,6 +139,159 @@ fn render_subcommand() {
     assert!(String::from_utf8_lossy(&o.stderr).contains("unknown control"));
 }
 
+/// A synthetic film negative whose known positive is a set of vertical bands, so the conversion
+/// can be checked end to end: the middle band reads 50 %, the right band 90 %, the left (film-base)
+/// band black.
+#[test]
+fn render_negative_conversion() {
+    let base = [214.0 / 255.0, 169.0 / 255.0, 120.0 / 255.0];
+    let dark = [7.17 / 255.0, 1.56 / 255.0, -0.89 / 255.0];
+    let input = tmp("neg-in.png");
+    negative_png(&input, base, dark);
+    let settings = tmp("neg.json");
+    std::fs::write(
+        &settings,
+        serde_json::to_vec(&json!({"negative": {
+            "enabled": true,
+            "base_r": base[0], "base_g": base[1], "base_b": base[2],
+            "dark_r": dark[0], "dark_g": dark[1], "dark_b": dark[2],
+            "tone_profile": 1, "saturation": 0.0, "color_density": 1, "lut": 2
+        }}))
+        .unwrap(),
+    )
+    .unwrap();
+    let out = tmp("neg-out.png");
+    let st = Command::new(BIN)
+        .args(["render", input.to_str().unwrap(), "-o", out.to_str().unwrap(), "--settings", settings.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let img = lightcraft_codecs::decode(&std::fs::read(&out).unwrap(), Default::default()).unwrap();
+    let srgb = img.to_srgb8();
+    let (w, h) = (img.width as usize, img.height as usize);
+    let band = |x0: usize, x1: usize| -> [f64; 3] {
+        let mut acc = [0.0f64; 3];
+        let mut n = 0.0;
+        for y in 0..h {
+            for x in x0..x1 {
+                for c in 0..3 {
+                    acc[c] += srgb.data[y * w + x][c] as f64;
+                }
+                n += 1.0;
+            }
+        }
+        acc.map(|v| v / n)
+    };
+    let black = band(2, 18);
+    let mid = band(25, 65);
+    let high = band(75, 115);
+    for c in 0..3 {
+        assert!(black[c] < 5.0, "base band should be black, got {black:?}");
+        assert!((mid[c] - 127.5).abs() < 6.0, "middle band should read 50 %, got {mid:?}");
+        assert!((high[c] - 229.5).abs() < 7.0, "high band should read 90 %, got {high:?}");
+    }
+    // With the conversion off the render round-trips the file untouched.
+    let off = tmp("neg-off.png");
+    let plain = tmp("neg-plain.json");
+    std::fs::write(&plain, serde_json::to_vec(&json!({"negative": {"enabled": false}})).unwrap()).unwrap();
+    let st = Command::new(BIN)
+        .args(["render", input.to_str().unwrap(), "-o", off.to_str().unwrap(), "--settings", plain.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(st.success());
+    let d = lightcraft_codecs::decode(&std::fs::read(&off).unwrap(), Default::default()).unwrap();
+    assert!((mean(&off) - mean(&input)).abs() < 1.0, "disabled conversion must not change the image");
+    assert_eq!((d.width, d.height), (img.width, img.height));
+}
+
+/// A film negative whose inverse-window positive is three vertical bands (0 %, 50 %, 90 %).
+fn negative_png(path: &std::path::Path, base: [f64; 3], dark: [f64; 3]) {
+    let img = lightcraft_raster::Rgba8::from_fn(120, 80, |x, _| {
+        let y = if x < 20 {
+            0.0
+        } else if x < 70 {
+            0.5
+        } else {
+            0.9
+        };
+        let mut px = [0u8; 4];
+        for c in 0..3 {
+            let v = base[c] - y * (base[c] - dark[c]);
+            px[c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        px[3] = 255;
+        px
+    });
+    let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();
+    std::fs::write(path, png).unwrap();
+}
+
+/// A film negative with a film-base ring around the frame (so the base can be measured from the
+/// border) and two 50 % / 90 % positive bands inside.
+fn base_ring_negative_png(path: &std::path::Path, base: [f64; 3], dark: [f64; 3]) {
+    let img = lightcraft_raster::Rgba8::from_fn(60, 60, |x, y| {
+        let ring = x < 3 || y < 3 || x >= 57 || y >= 57;
+        let y_pos = if ring {
+            0.0
+        } else if x < 30 {
+            0.5
+        } else {
+            0.9
+        };
+        let mut px = [0u8; 4];
+        for c in 0..3 {
+            let v = base[c] - y_pos * (base[c] - dark[c]);
+            px[c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        px[3] = 255;
+        px
+    });
+    let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();
+    std::fs::write(path, png).unwrap();
+}
+
+/// The settings path (`{"negative": {"enabled": true}}`, no base) must measure the film base from
+/// the border, not invert a `base = 0` window (which rendered the film-base strip bright yellow,
+/// RMS 147 against the plugin's export). This drives the conversion through the settings file only,
+/// never `develop.negative`.
+#[test]
+fn render_negative_settings_measures_the_base() {
+    let base = [214.0 / 255.0, 169.0 / 255.0, 120.0 / 255.0];
+    let dark = [7.17 / 255.0, 1.56 / 255.0, -0.89 / 255.0];
+    let input = tmp("neg-ring-in.png");
+    base_ring_negative_png(&input, base, dark);
+    let render = |tag: &str, settings: Value| -> lightcraft_codecs::Decoded {
+        let file = tmp(&format!("neg-ring-{tag}.json"));
+        std::fs::write(&file, serde_json::to_vec(&settings).unwrap()).unwrap();
+        let out = tmp(&format!("neg-ring-{tag}.png"));
+        let st = Command::new(BIN)
+            .args(["render", input.to_str().unwrap(), "-o", out.to_str().unwrap(), "--settings", file.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(st.success());
+        lightcraft_codecs::decode(&std::fs::read(&out).unwrap(), Default::default()).unwrap()
+    };
+    // no base in the settings: the stage measures it from the border ring
+    let measured = render("auto", json!({"negative": {"enabled": true}}));
+    // the base supplied explicitly (what `develop.negativeMeasure` would store)
+    let explicit = render(
+        "explicit",
+        json!({"negative": {"enabled": true, "base_r": base[0], "base_g": base[1], "base_b": base[2],
+                            "dark_r": dark[0], "dark_g": dark[1], "dark_b": dark[2]}}),
+    );
+    let (a, b) = (measured.to_srgb8(), explicit.to_srgb8());
+    assert_eq!(a.data.len(), b.data.len());
+    let diff = a.data.iter().zip(&b.data).flat_map(|(p, q)| p.iter().zip(q.iter())).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap();
+    assert!(diff <= 2, "the auto-measured base must match the explicit one, worst pixel diff {diff}");
+    // and the film-base ring reads black, not the old bright-yellow garbage
+    let w = measured.width as usize;
+    let ring_px = a.data[30 * w + 1];
+    for c in 0..3 {
+        assert!(ring_px[c] < 8, "the film-base border must read black, got {ring_px:?}");
+    }
+    assert!((ring_px[0] as i32 - ring_px[2] as i32).abs() < 20, "not a yellow cast: {ring_px:?}");
+}
+
 /// Issue #93: `render IMG -o IMG` replaced its own input with the render.
 #[test]
 fn render_refuses_to_overwrite_its_input() {

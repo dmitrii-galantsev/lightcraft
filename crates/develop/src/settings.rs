@@ -137,6 +137,10 @@ pub struct DevelopSettings {
     pub red_eye: Vec<RedEye>,
     pub lens_blur: LensBlur,
     pub enhance: Enhance,
+    /// Film-negative conversion: a scan converted to a positive. Skipped while at its default,
+    /// so settings without it keep their JSON and `hash64` (and every cached preview stays valid).
+    #[serde(skip_serializing_if = "Negative::is_default")]
+    pub negative: Negative,
     /// Camera calibration: shadows tint and primary hue/saturation (applied before tone mapping).
     pub calibration: Calibration,
     /// Section on/off toggles (the "eye" buttons on panel headers): section id → enabled.
@@ -172,6 +176,7 @@ impl Default for DevelopSettings {
             red_eye: Vec::new(),
             lens_blur: LensBlur::default(),
             enhance: Enhance::default(),
+            negative: Negative::default(),
             calibration: Calibration::default(),
             disabled_sections: Vec::new(),
         }
@@ -1101,6 +1106,132 @@ pub struct Enhance {
 impl Enhance {
     pub fn denoise_enabled(&self) -> bool {
         self.denoise_on.unwrap_or(self.denoise > 0.0)
+    }
+}
+
+/// Film-negative conversion (a scan converted to a positive).
+///
+/// The confirmed maths is a per-channel linear inverting window
+/// `out = clamp01((base - in) / (base - dark))`, where `base` is the film base measured from the
+/// frame border and `dark` is the negative's dark endpoint. `base` is measured from the border ring's
+/// per-channel 95th percentile — by `develop.negativeMeasure`, or automatically by the pipeline when
+/// it is unmeasured (0). `dark` is an explicit parameter — the real plugin's rule for it is unknown
+/// and content-dependent (see `lightcraft-negative` and `nlp-re` KNOWN-GAPS G23), so no formula is
+/// invented here. The remaining fields are the modelled preset vocabulary.
+///
+/// The pipeline runs this in its scene-linear stage (`lightcraft_pipeline`), on the scan's own
+/// encoded values, and applies a camera profile only when the user supplies a `.dcp` path —
+/// LightCraft ships none.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Negative {
+    /// Master switch: the source is a film negative and is converted to a positive.
+    pub enabled: bool,
+    /// Film base per channel (encoded 0..1); `0` means unmeasured, and the pipeline measures it
+    /// from the frame border's high quantile.
+    pub base_r: f64,
+    pub base_g: f64,
+    pub base_b: f64,
+    /// The invert window's dark endpoint per channel (encoded 0..1): an **unfitted, explicit**
+    /// parameter, defaulting to the reference grey-wedge fit.
+    pub dark_r: f64,
+    pub dark_g: f64,
+    pub dark_b: f64,
+    /// Border inset fraction the base is measured over (the plugin's `borderBuffer`).
+    pub border: f64,
+    /// A user-supplied `.dcp` camera profile; empty = the profile half is skipped.
+    pub profile: String,
+    /// Profile blend amount 0..200 (%).
+    pub profile_amount: f64,
+    /// Gamma the scan is stored with (1.0 = already encoded, the confirmed case).
+    pub scan_gamma: f64,
+    /// Gamma the result is encoded with (1.0 = stays encoded).
+    pub output_gamma: f64,
+    /// Preset vocabulary: saturation percent (−100..100).
+    pub saturation: f64,
+    /// `0` addDensity (default), `1` neutralDensity.
+    pub color_density: u8,
+    pub black_clip: f64,
+    pub white_clip: f64,
+    /// `0` standard, `1` linear, `2` linear_gamma, `3` logarithmic.
+    pub tone_profile: u8,
+    pub lights: f64,
+    pub darks: f64,
+    pub whites: f64,
+    pub blacks: f64,
+    pub lab_fade: f64,
+    pub lab_glow: f64,
+    pub shadows_range: f64,
+    pub highs_range: f64,
+    pub red_cyan_shadows: f64,
+    pub red_cyan_mids: f64,
+    pub red_cyan_highs: f64,
+    pub green_magenta_shadows: f64,
+    pub green_magenta_mids: f64,
+    pub green_magenta_highs: f64,
+    pub blue_yellow_shadows: f64,
+    pub blue_yellow_mids: f64,
+    pub blue_yellow_highs: f64,
+    /// `0` colourFirst (default), `1` toneFirst.
+    pub process_order: u8,
+    /// `0..3` Crystal/Frontier/Natural/Pakon (Natural is the identity).
+    pub lut: u8,
+}
+
+impl Default for Negative {
+    fn default() -> Self {
+        // The reference grey-wedge dark-endpoint fit, in encoded 0..1 (nlp-re G23 placeholder).
+        const DARK: [f64; 3] = [7.17 / 255.0, 1.56 / 255.0, -0.89 / 255.0];
+        Self {
+            enabled: false,
+            base_r: 0.0,
+            base_g: 0.0,
+            base_b: 0.0,
+            dark_r: DARK[0],
+            dark_g: DARK[1],
+            dark_b: DARK[2],
+            border: 0.0,
+            profile: String::new(),
+            profile_amount: 100.0,
+            scan_gamma: 1.0,
+            output_gamma: 1.0,
+            saturation: 0.0,
+            color_density: 0,
+            black_clip: 0.0,
+            white_clip: 0.0,
+            tone_profile: 1,
+            lights: 0.0,
+            darks: 0.0,
+            whites: 0.0,
+            blacks: 0.0,
+            lab_fade: 0.0,
+            lab_glow: 0.0,
+            shadows_range: 5.0,
+            highs_range: 5.0,
+            red_cyan_shadows: 0.0,
+            red_cyan_mids: 0.0,
+            red_cyan_highs: 0.0,
+            green_magenta_shadows: 0.0,
+            green_magenta_mids: 0.0,
+            green_magenta_highs: 0.0,
+            blue_yellow_shadows: 0.0,
+            blue_yellow_mids: 0.0,
+            blue_yellow_highs: 0.0,
+            process_order: 0,
+            lut: 2,
+        }
+    }
+}
+
+impl Negative {
+    /// Whether the base has been measured (all three channels non-zero).
+    pub fn has_base(&self) -> bool {
+        self.base_r > 0.0 && self.base_g > 0.0 && self.base_b > 0.0
+    }
+
+    /// Whether these are the default negative settings.
+    pub fn is_default(&self) -> bool {
+        *self == Negative::default()
     }
 }
 

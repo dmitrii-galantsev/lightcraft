@@ -394,6 +394,38 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         }
         ui.add_space(8.0);
     });
+    // Film-negative conversion: a scan of a negative becomes a positive (LR-EDIT-NEGATIVE).
+    section(app, ui, &d, "negative", "Negative", |app, ui, d| {
+        let on = d.negative.enabled;
+        if text_button(ui, "negative-on", crate::i18n::tr("Convert Negative"), on).clicked() {
+            let _ = app.run("develop.negative", json!({}));
+        }
+        if text_button(ui, "negative-measure", crate::i18n::tr("Measure Film Base"), false).clicked() {
+            let _ = app.run("develop.negativeMeasure", json!({}));
+        }
+        sub_title(ui, crate::i18n::tr("Film Base"));
+        for id in ["negative.baseR", "negative.baseG", "negative.baseB"] {
+            control(app, ui, d, id, on);
+        }
+        control(app, ui, d, "negative.border", on);
+        sub_title(ui, crate::i18n::tr("Dark Endpoint (unfitted)"));
+        for id in ["negative.darkR", "negative.darkG", "negative.darkB"] {
+            control(app, ui, d, id, on);
+        }
+        sub_title(ui, crate::i18n::tr("Preset"));
+        for id in [
+            "negative.toneProfile",
+            "negative.density",
+            "negative.saturation",
+            "negative.blackClip",
+            "negative.whiteClip",
+            "negative.lut",
+            "negative.profileAmount",
+        ] {
+            control(app, ui, d, id, on);
+        }
+        ui.add_space(8.0);
+    });
     ui.add_space(40.0);
     // A pending numeric edit commits on blur before the explicit Reset takes precedence.
     if reset_clicked {

@@ -54,8 +54,16 @@ cited here still exists. Formerly docs/parity.md.
 | Z. Keyboard shortcuts (desktop) | 76 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
 | Lightroom Classic extras | 34 | 16 | 35 | 8 | — | 24/26 (92%) |
 | **Total** | 407 | 50 | 73 | 35 | 192/200 (96%) | 145/157 (92%) |
+||||||| parent of 0a5006d7 (negative: film-negative conversion wired into the pipeline)
+| X. Cross-cutting behaviours (BEHAV) | 18 | 6 | 1 | 1 | 8/8 (100%) | 6/9 (67%) |
+| Y. Menus | 82 | 0 | 4 | 8 | 47/47 (100%) | 23/23 (100%) |
+| Z. Keyboard shortcuts (desktop) | 75 | 3 | 3 | 1 | 49/52 (94%) | 23/24 (96%) |
+| Lightroom Classic extras | 33 | 15 | 35 | 9 | — | 23/25 (92%) |
+| **Total** | 397 | 49 | 73 | 36 | 192/200 (96%) | 143/155 (92%) |
 
 Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.5%** of 530 in-scope rows — P0 98.0% of 200 · P1 95.2% of 157 · P2 49.7% of 172.
+||||||| parent of 0a5006d7 (negative: film-negative conversion wired into the pipeline)
+Weighted completion (✅ = 1, 🟡 = ½, 🚫 left out): **81.2%** of 519 in-scope rows — P0 98.0% of 200 · P1 95.2% of 155 · P2 47.2% of 163.
 <!-- /parity:summary -->
 
 ## Top gaps and shortcut notes

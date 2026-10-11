@@ -28,6 +28,7 @@ mod masks;
 mod merge;
 pub mod metadata;
 pub mod missing;
+mod negative;
 mod organize;
 mod prefs;
 mod preset_files;
@@ -162,6 +163,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(geocode::specs());
         v.extend(filters::specs());
         v.extend(denoise::specs());
+        v.extend(negative::specs());
         v.extend(face_models::specs());
         v.extend(face_detect::specs());
         v.extend(face_recognize::specs());

@@ -1,6 +1,12 @@
 # Gaps: where LightCraft falls short of Lightroom
 
+<<<<<<< HEAD
 > **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** minor (integration batches 27–30 merged in; the negative conversion landed, its dark-endpoint and colour-mixing gaps tracked as #29) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+||||||| parent of 0a5006d7 (negative: film-negative conversion wired into the pipeline)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** major (created; absorbs the checklist's Top gaps and the ROADMAP's honest assessment, re-ranked after a full re-measure) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+=======
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-10 · **Change:** minor (negative conversion landed; its dark-endpoint and colour-mixing gaps tracked as #29) · **Target:** Adobe Lightroom Classic 15.5 / Lightroom 9.6
+>>>>>>> 0a5006d7 (negative: film-negative conversion wired into the pipeline)
 
 Every known shortfall, one entry each, ranked by user impact (how many Lightroom users hit it, and
 how hard it blocks them), then by effort. **Agents pick work from the top** (the first entry nobody is

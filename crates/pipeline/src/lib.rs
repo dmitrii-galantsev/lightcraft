@@ -34,6 +34,7 @@ pub mod local;
 pub mod local_tone;
 pub mod lut;
 pub mod masks;
+pub mod negative;
 pub mod optics;
 pub mod output;
 pub mod profiles;
@@ -439,6 +440,8 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         format!("{:?}", s.optics),
         // and the local tone mapping
         local_tone::enabled(info, s),
+        format!("{:?}", s.negative),
+        s.section_enabled("negative"),
         src_long,
     ));
     let lin_key = hash_of((pre_nr_key, [d.nr_luminance, d.nr_detail, d.nr_color, d.nr_color_detail, d.nr_color_smoothness].map(f64::to_bits)));
@@ -463,13 +466,16 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
 pub fn lin_needs_cpu(s: &DevelopSettings, info: &SourceInfo) -> bool {
     let o = &s.optics;
     let defringe = s.section_enabled("optics") && (o.defringe_purple_amount > 0.0 || o.defringe_green_amount > 0.0);
-    defringe || !s.spots.is_empty() || local_tone::enabled(info, s)
+    defringe || !s.spots.is_empty() || local_tone::enabled(info, s) || (s.negative.enabled && s.section_enabled("negative"))
 }
 
 /// The white-balanced, defringed, retouched image (before noise reduction): the CPU part of the
 /// scene-linear stage, in place.
 pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     let s = &*p.settings;
+    // the negative conversion first: it turns the scan into the positive the rest of the chain
+    // (white balance, tone, colour) then edits
+    negative::apply(img, s);
     // (before the white balance: the gain's input is the as-shot development, as in the file)
     local_tone::apply(img, info, p);
     local::white_balance(img, info, s);

@@ -26,6 +26,7 @@ lightcraft-meta = { path = "crates/meta" }
 lightcraft-develop = { path = "crates/develop" }
 lightcraft-lensdb = { path = "crates/lensdb" }
 lightcraft-inpaint = { path = "crates/inpaint" }
+lightcraft-negative = { path = "crates/negative" }
 lightcraft-scenes = { path = "crates/scenes" }
 lightcraft-pipeline = { path = "crates/pipeline" }
 lightcraft-gpu = { path = "crates/gpu" }
@@ -151,6 +152,7 @@ lightcraft-pipeline = { opt-level = 3 }
 lightcraft-raster = { opt-level = 3 }
 lightcraft-color = { opt-level = 3 }
 lightcraft-develop = { opt-level = 3 }
+lightcraft-negative = { opt-level = 3 }
 lightcraft-geom = { opt-level = 3 }
 lightcraft-raw = { opt-level = 3 }
 lightcraft-codecs = { opt-level = 3 }

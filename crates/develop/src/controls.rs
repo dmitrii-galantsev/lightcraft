@@ -27,6 +27,7 @@ pub enum Section {
     Profile,
     Calibration,
     PointColor,
+    Negative,
     RedEye,
 }
 
@@ -48,6 +49,7 @@ impl Section {
             Section::Profile => "Profile",
             Section::Calibration => "Calibration",
             Section::PointColor => "Point Color",
+            Section::Negative => "Negative",
             Section::RedEye => "Red Eye",
         }
     }
@@ -253,6 +255,41 @@ controls! {
     "calibration.blueHue" => calibration.blue_hue, "Blue Hue", Calibration, -100, 100, 0, 1, 0, Gradient { from: "#30a0d0", to: "#8040d0" };
     "calibration.blueSat" => calibration.blue_sat, "Blue Saturation", Calibration, -100, 100, 0, 1, 0, Gradient { from: "#7a7a7a", to: "#3a60e0" };
     "crop.angle" => crop.geometry.angle, "Straighten", Geometry, -45, 45, 0, 0.01, 2, Centered;
+    // ---- Negative (film-negative conversion; see lightcraft_negative and docs/negative-conversion.md)
+    "negative.baseR" => negative.base_r, "Base R", Negative, 0, 1, 0, 0.001, 4, Plain;
+    "negative.baseG" => negative.base_g, "Base G", Negative, 0, 1, 0, 0.001, 4, Plain;
+    "negative.baseB" => negative.base_b, "Base B", Negative, 0, 1, 0, 0.001, 4, Plain;
+    "negative.darkR" => negative.dark_r, "Dark Endpoint R", Negative, -0.1, 1, 7.17 / 255.0, 0.001, 4, Plain;
+    "negative.darkG" => negative.dark_g, "Dark Endpoint G", Negative, -0.1, 1, 1.56 / 255.0, 0.001, 4, Plain;
+    "negative.darkB" => negative.dark_b, "Dark Endpoint B", Negative, -0.1, 1, -0.89 / 255.0, 0.001, 4, Plain;
+    "negative.border" => negative.border, "Border Buffer", Negative, 0, 49, 0, 1, 0, Plain;
+    "negative.profileAmount" => negative.profile_amount, "Profile Amount", Negative, 0, 200, 100, 1, 0, Plain;
+    "negative.scanGamma" => negative.scan_gamma, "Scan Gamma", Negative, 0.1, 3, 1, 0.01, 2, Plain;
+    "negative.outputGamma" => negative.output_gamma, "Output Gamma", Negative, 0.1, 3, 1, 0.01, 2, Plain;
+    "negative.saturation" => negative.saturation, "Saturation", Negative, -100, 100, 0, 1, 0, Gradient { from: "#7a7a7a", to: "#e04a3a" };
+    "negative.density" => negative.color_density, "Density", Negative, 0, 1, 0, 1, 0, Plain;
+    "negative.blackClip" => negative.black_clip, "Black Clip", Negative, -100, 0, 0, 1, 0, Plain;
+    "negative.whiteClip" => negative.white_clip, "White Clip", Negative, -100, 0, 0, 1, 0, Plain;
+    "negative.toneProfile" => negative.tone_profile, "Tone Profile", Negative, 0, 3, 1, 1, 0, Plain;
+    "negative.lights" => negative.lights, "Lights", Negative, -100, 100, 0, 1, 0, Centered;
+    "negative.darks" => negative.darks, "Darks", Negative, -100, 100, 0, 1, 0, Centered;
+    "negative.whites" => negative.whites, "Whites", Negative, -100, 100, 0, 1, 0, Centered;
+    "negative.blacks" => negative.blacks, "Blacks", Negative, -100, 100, 0, 1, 0, Centered;
+    "negative.labFade" => negative.lab_fade, "Fade", Negative, 0, 100, 0, 1, 0, Plain;
+    "negative.labGlow" => negative.lab_glow, "Glow", Negative, 0, 100, 0, 1, 0, Plain;
+    "negative.shadowsRange" => negative.shadows_range, "Shadows Range", Negative, 0, 20, 5, 1, 0, Plain;
+    "negative.highsRange" => negative.highs_range, "Highlights Range", Negative, 0, 20, 5, 1, 0, Plain;
+    "negative.redCyanShadows" => negative.red_cyan_shadows, "Red/Cyan Shadows", Negative, -100, 100, 0, 1, 0, Gradient { from: "#30c0c0", to: "#e04040" };
+    "negative.redCyanMids" => negative.red_cyan_mids, "Red/Cyan Midtones", Negative, -100, 100, 0, 1, 0, Gradient { from: "#30c0c0", to: "#e04040" };
+    "negative.redCyanHighs" => negative.red_cyan_highs, "Red/Cyan Highlights", Negative, -100, 100, 0, 1, 0, Gradient { from: "#30c0c0", to: "#e04040" };
+    "negative.greenMagentaShadows" => negative.green_magenta_shadows, "Green/Magenta Shadows", Negative, -100, 100, 0, 1, 0, Gradient { from: "#40c040", to: "#d040b0" };
+    "negative.greenMagentaMids" => negative.green_magenta_mids, "Green/Magenta Midtones", Negative, -100, 100, 0, 1, 0, Gradient { from: "#40c040", to: "#d040b0" };
+    "negative.greenMagentaHighs" => negative.green_magenta_highs, "Green/Magenta Highlights", Negative, -100, 100, 0, 1, 0, Gradient { from: "#40c040", to: "#d040b0" };
+    "negative.blueYellowShadows" => negative.blue_yellow_shadows, "Blue/Yellow Shadows", Negative, -100, 100, 0, 1, 0, Gradient { from: "#4060e0", to: "#d0c030" };
+    "negative.blueYellowMids" => negative.blue_yellow_mids, "Blue/Yellow Midtones", Negative, -100, 100, 0, 1, 0, Gradient { from: "#4060e0", to: "#d0c030" };
+    "negative.blueYellowHighs" => negative.blue_yellow_highs, "Blue/Yellow Highlights", Negative, -100, 100, 0, 1, 0, Gradient { from: "#4060e0", to: "#d0c030" };
+    "negative.processOrder" => negative.process_order, "Process Order", Negative, 0, 1, 0, 1, 0, Plain;
+    "negative.lut" => negative.lut, "LUT", Negative, 0, 3, 2, 1, 0, Plain;
 }
 
 /// Template specs of the indexed controls (`<family>.<field>`; addressed as `<family>.<i>.<field>`).

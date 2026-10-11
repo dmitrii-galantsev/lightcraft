@@ -3119,9 +3119,12 @@ dependencies = [
  "dhat",
  "lightcraft-codecs",
  "lightcraft-denoise",
+ "lightcraft-develop",
  "lightcraft-engine",
  "lightcraft-mcp",
  "lightcraft-merge",
+ "lightcraft-negative",
+ "lightcraft-pipeline",
  "lightcraft-raster",
  "lightcraft-sysmem",
  "lightcraft-ui-egui",
@@ -3233,6 +3236,7 @@ dependencies = [
  "lightcraft-lensdb",
  "lightcraft-merge",
  "lightcraft-meta",
+ "lightcraft-negative",
  "lightcraft-pipeline",
  "lightcraft-preview",
  "lightcraft-raster",
@@ -3373,6 +3377,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lightcraft-negative"
+version = "0.6.0"
+dependencies = [
+ "lightcraft-color",
+ "lightcraft-raster",
+]
+
+[[package]]
 name = "lightcraft-pipeline"
 version = "0.6.0"
 dependencies = [
@@ -3381,6 +3393,7 @@ dependencies = [
  "lightcraft-develop",
  "lightcraft-geom",
  "lightcraft-inpaint",
+ "lightcraft-negative",
  "lightcraft-raster",
  "lightcraft-raw",
  "lightcraft-scenes",
