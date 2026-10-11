@@ -273,7 +273,11 @@ pub(crate) fn lens_ops(id: lightcraft_catalog::PhotoId, ph: &lightcraft_catalog:
     }
     let mut ops = vec![Op::SetEmbeddedLens { id, lens: info.embedded_lens.map(Box::new) }];
     // (a photo with a default-preset look keeps it: that look is its import state)
-    if ph.embedded_lens.is_none() && info.embedded_lens.is_some() && ph.import_look.is_none() && !ph.is_edited() && !ph.develop.optics.lens_profile {
+    // only an `OpcodeList3` correction (distortion / vignetting) turns the profile on: a file that
+    // merely records a lateral-CA table gains nothing from "Enable Lens Corrections"
+    let corrects = |l: &Option<lightcraft_develop::EmbeddedLens>| l.as_ref().is_some_and(|l| l.warp.is_some() || l.vignette.is_some());
+    if !corrects(&ph.embedded_lens) && corrects(&info.embedded_lens) && ph.import_look.is_none() && !ph.is_edited() && !ph.develop.optics.lens_profile
+    {
         let mut d = (*ph.develop).clone();
         d.optics.lens_profile = true;
         ops.push(Op::SetDevelop { id, settings: std::sync::Arc::new(d), label: "Lens Corrections".into(), edited: ph.edited.clone() });
@@ -444,6 +448,7 @@ mod tests {
             warp: Some(lightcraft_develop::EmbeddedWarp { planes: [[1.0, -0.1, 0.03, 0.0, 0.0, 0.0]; 3], ..Default::default() }),
             vignette: None,
             stages: Default::default(),
+            lateral_ca: false,
         }
     }
     fn old_rw2() -> lightcraft_catalog::Photo {

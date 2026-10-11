@@ -33,8 +33,11 @@
 //!   photo, at its 65 fit samples. A table it fits worse than 0.25 px at the samples the crop shows is refused (the
 //!   photo stays uncorrected rather than wrongly warped). Between samples the error is somewhat larger: 0.071 against
 //!   0.049 px for the full-frame 16–35 mm example in the tests.
-//! - vignetting: read but never applied. The camera JPEGs keep the uncorrected render's radial falloff (median
-//!   corner/centre ratio 0.996 over 39 photos) and no radial gain model fits the tables.
+//! - vignetting: read but never applied. The camera's own JPEG carries no vignetting correction on these files — its
+//!   per-radius ratio to the uncorrected render is flat (1.00 ± 0.02; the camera JPEG is distortion-corrected but not
+//!   shading-corrected) — so there is no correction in the reference for a gain model to match. A profile-corrected
+//!   export does carry it, with this table's convention (unit 15000), but is not a permissible source. See
+//!   docs/sony-lens-corrections.md.
 //! - lateral CA: red's (blue's) source radius is `g · (1 + c(g) / 1.6·10⁶)` with `g` the green source radius and `c`
 //!   the red (blue) half on the same knots. The unit was refit here against the ILCE-7M4 camera JPEGs: on the corner
 //!   fringing of the referenced render, turning the correction on with it removes most of the R/G and B/G CA, and the
@@ -103,7 +106,8 @@ const FIT_ERROR_PX_AT_1440: f64 = 0.25;
 
 /// A file's lens tables: the first `count` values of each (CA: red, blue); `None` when absent or malformed.
 /// `vignetting` and `flags` are parsed for the tests and the docs only: don't build an opcode from them (the camera
-/// applies no vignetting correction to its JPEGs, and the flags don't decide anything).
+/// applies no vignetting correction to its JPEGs — measured, see docs/sony-lens-corrections.md — and the flags don't
+/// decide anything).
 #[derive(Debug)]
 // vignetting and the flags never become an opcode
 #[cfg_attr(not(test), allow(dead_code))]

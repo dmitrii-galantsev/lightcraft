@@ -54,10 +54,11 @@ fn meta_of(m: &lightcraft_meta::Metadata) -> (Meta, Option<String>) {
     (meta, m.capture_time.as_ref().map(|d| d.to_iso()))
 }
 
-/// Lens corrections embedded in a raw's `OpcodeList3` (`WarpRectilinear`, `WarpRectilinear2`, `FixVignetteRadial`: a DNG's own, or the
-/// raw reader's equivalent of the camera's correction, e.g. Panasonic / Leica RW2 distortion), re-expressed for the
-/// default-cropped, EXIF-oriented image. These are the only "profile" corrections LightCraft applies.
-pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop::EmbeddedLens> {
+/// Lens corrections embedded in a raw: its `OpcodeList3` (`WarpRectilinear`, `WarpRectilinear2`, `FixVignetteRadial` —
+/// a DNG's own, or the raw reader's equivalent of the camera's correction, e.g. Sony distortion, Panasonic / Leica RW2
+/// distortion), plus whether it records its own lateral-CA table (applied on the CFA before demosaic, `lightcraft_raw`'s
+/// `lateral_ca`), re-expressed for the default-cropped, EXIF-oriented image. These are the only "profile"
+/// corrections LightCraft applies.pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop::EmbeddedLens> {
     use lightcraft_develop::{EmbeddedLens, EmbeddedVignette, EmbeddedWarp, EmbeddedWarpStage, WARP_STAGES};
     use lightcraft_geom::Point;
     use lightcraft_raw::Opcode;
@@ -79,7 +80,7 @@ pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop
             .max(1e-9);
         (Point::new((px + 0.5 - cx0) / cw, (py + 0.5 - cy0) / ch), m / long)
     };
-    let mut lens = EmbeddedLens::default();
+    let mut lens = EmbeddedLens { lateral_ca: raw.lateral_ca.is_some(), ..Default::default() };
     // opcodes in list order, minus the ones the DNG 1.6 skip rule drops (a WarpRectilinear that follows an optional
     // WarpRectilinear2)
     let ops: Vec<&Opcode> = lightcraft_raw::opcodes::applied_ops(&raw.opcodes.list3).collect();
@@ -87,8 +88,7 @@ pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop
     // without one the first WarpRectilinear is the lens warp, as it always was.
     let chain = ops.iter().any(|op| matches!(op, Opcode::WarpRectilinear2 { .. }));
     let mut stages = Vec::new();
-    for op in ops {
-        match op {
+    for op in ops {        match op {
             Opcode::WarpRectilinear2 { planes, center, reciprocal, .. } if !planes.is_empty() => {
                 let (center, radius) = centre(*center);
                 let p = |i: usize| planes[i.min(planes.len() - 1)];
@@ -127,8 +127,7 @@ pub fn embedded_lens(raw: &lightcraft_raw::RawInfo) -> Option<lightcraft_develop
     for (slot, st) in lens.stages.iter_mut().zip(stages.into_iter().take(WARP_STAGES)) {
         *slot = Some(st);
     }
-    if lens.warp.is_none() && lens.vignette.is_none() && !lens.has_stages() {
-        return None;
+    if lens.is_empty() {        return None;
     }
     Some(lightcraft_pipeline::optics::reorient_lens(&lens, raw.orientation, cw, ch))
 }
@@ -1977,6 +1976,8 @@ mod tests {
         };
         let lens = of("ILCE-7M4").expect("ILCE-7M4 warp");
         assert!(lens.vignette.is_none());
+        assert!(lens.lateral_ca, "the file's lateral-CA table is recorded");
+        assert_eq!(lens.recorded(), [true, false, true], "distortion and CA recorded, no vignetting");
         let warp = lens.warp.expect("warp");
         // the single G plane is replicated to R, G and B; the opcode's centre lands on the default crop's centre
         assert_eq!(warp.planes, [warp.planes[0]; 3]);

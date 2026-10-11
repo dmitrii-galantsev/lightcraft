@@ -2141,3 +2141,32 @@ fn right_click_add_to_album_offers_a_new_album_when_there_is_none() {
     assert!(trip.photos.contains(&photo), "the right-clicked photo is in it: {:?}", trip.photos);
     assert!(h.app.ui.dialog.is_none(), "{:?}", h.app.ui.dialog);
 }
+
+/// The Optics section shows what a Lightroom user reads in Lens Corrections → Profile: the lens from
+/// the file's own metadata and which of the three corrections this photo applies. The user's report
+/// ("I don't see the lens profiles") is answered by naming the lens here.
+#[test]
+fn the_optics_section_names_the_lens_and_its_corrections() {
+    let mut h = demo([1400.0, 1200.0], json!({"view": "detail", "right": "edit"}));
+    let id = h.app.session.active().expect("active photo");
+    let lens = lightcraft_develop::EmbeddedLens { warp: Some(Default::default()), vignette: None, lateral_ca: true };
+    h.app.session.catalog.apply(lightcraft_catalog::Op::SetEmbeddedLens { id, lens: Some(Box::new(lens)) }).unwrap();
+    let meta = lightcraft_catalog::Meta { lens: "E 35-150mm F2.0-F2.8 A058".into(), ..Default::default() };
+    h.app.session.catalog.apply(lightcraft_catalog::Op::SetMeta { id, meta: Box::new(meta) }).unwrap();
+    // the Optics section is below the fold unless the open one is folded: it is the first
+    if h.app.ui.section_open("light") {
+        h.app.ui.toggle_section("light");
+    }
+    if !h.app.ui.section_open("optics") {
+        h.app.ui.toggle_section("optics");
+    }
+    h.step();
+    h.step();
+    let painted = h.painted_text();
+    for want in ["Lens Corrections", "E 35-150mm F2.0-F2.8 A058", "Embedded (from the file)", "Distortion", "Vignetting", "Chromatic Aberration"] {
+        assert!(painted.iter().any(|t| t == want), "{want} not painted: {painted:?}");
+    }
+    // chromatic aberration is on by default, so its row reads Applied; the file carries no vignetting
+    assert!(painted.iter().any(|t| t == "Applied"), "an applied correction: {painted:?}");
+    assert!(painted.iter().any(|t| t == "Not applied"), "vignetting is not applied: {painted:?}");
+}

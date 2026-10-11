@@ -335,7 +335,43 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         ui.add_space(8.0);
     });
     section(app, ui, &d, "optics", "Optics", |app, ui, d| {
-        let has_lens = app.session.catalog.photo(id).is_some_and(|p| p.embedded_lens.is_some());
+        // The file's own lens identity and the corrections it records: what a Lightroom user reads in
+        // Lens Corrections → Profile (Maker / Model / Profile), taken from the raw's tags — no profile
+        // database. Nothing here is fabricated: an absent correction says so.
+        let (lens_name, lens_make, embedded) =
+            app.session.catalog.photo(id).map(|p| (p.meta.lens.clone(), p.meta.lens_make.clone(), p.embedded_lens)).unwrap_or_default();
+        let recorded = embedded.map(|l| l.recorded()).unwrap_or([false; 3]);
+        let has_profile = recorded[0] || recorded[1];
+        let t = Tokens::get(ui.ctx());
+        sub_title(ui, crate::i18n::tr("Lens Corrections"));
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 0, bottom: 4 }).show(ui, |ui| {
+            let row = |ui: &mut egui::Ui, label: &str, value: &str| {
+                ui.horizontal(|ui| {
+                    ui.add_sized(vec2(132.0, 17.0), egui::Label::new(egui::RichText::new(crate::i18n::tr(label)).size(12.0).color(t.text_dim)));
+                    ui.add(egui::Label::new(egui::RichText::new(value).size(12.0).color(t.text_label)).truncate());
+                });
+            };
+            let name = if lens_name.is_empty() { crate::i18n::tr("Unknown lens").to_string() } else { lens_name.clone() };
+            row(ui, "Lens", &name);
+            if !lens_make.is_empty() {
+                row(ui, "Maker", &lens_make);
+            }
+            let profile = if recorded == [false; 3] { crate::i18n::tr("None") } else { crate::i18n::tr("Embedded (from the file)") };
+            row(ui, "Profile", profile);
+            // Which of the three corrections this photo is applying, and whether the file records one.
+            let status = |on: bool, present: bool| {
+                if !present {
+                    crate::i18n::tr("Not applied")
+                } else if on {
+                    crate::i18n::tr("Applied")
+                } else {
+                    crate::i18n::tr("On file — off")
+                }
+            };
+            row(ui, "Distortion", status(d.optics.lens_profile, recorded[0]));
+            row(ui, "Vignetting", status(d.optics.lens_profile, recorded[1]));
+            row(ui, "Chromatic Aberration", status(d.optics.remove_ca, recorded[2]));
+        });
         egui::Frame::NONE.inner_margin(egui::Margin { left: 24, right: 22, top: 4, bottom: 4 }).show(ui, |ui| {
             let mut ca = d.optics.remove_ca;
             if ui.checkbox(&mut ca, crate::i18n::tr("Remove Chromatic Aberration")).changed() {
@@ -345,17 +381,15 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
             if ui.checkbox(&mut lp, crate::i18n::tr("Enable Lens Corrections")).changed() {
                 let _ = app.run("develop.merge", json!({"settings": {"optics": {"lens_profile": lp}}, "label": "Lens Corrections"}));
             }
-            if lp && !has_lens {
+            if lp && !has_profile {
                 ui.label(
-                    egui::RichText::new(crate::i18n::tr("No lens data embedded in this file (DNG lens opcodes only)."))
-                        .size(11.0)
-                        .color(Tokens::get(ui.ctx()).text_dim),
+                    egui::RichText::new(crate::i18n::tr("No lens data embedded in this file (DNG lens opcodes only).")).size(11.0).color(t.text_dim),
                 );
             }
         });
         if d.optics.lens_profile {
             for c in ["optics.profileDistortion", "optics.profileVignetting"] {
-                control(app, ui, d, c, has_lens);
+                control(app, ui, d, c, has_profile);
             }
         }
         sub_title(ui, crate::i18n::tr("Manual"));

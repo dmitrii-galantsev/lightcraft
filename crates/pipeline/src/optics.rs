@@ -375,7 +375,7 @@ pub fn reorient_lens(lens: &EmbeddedLens, o: Orientation, w: f64, h: f64) -> Emb
             EmbeddedWarpStage { planes, center: map_pt(st.center), radius: st.radius * long_ratio, reciprocal: st.reciprocal }
         })
     });
-    EmbeddedLens { warp, vignette, stages }
+    EmbeddedLens { warp, vignette, stages, lateral_ca: lens.lateral_ca }
 }
 
 // ------------------------------------------------------------------------------------------ lateral CA
@@ -705,7 +705,7 @@ mod tests {
             };
             let planes = [plane(), plane(), plane()];
             let warp = EmbeddedWarp { planes, center: Point::new(r.range(0.4, 0.6), r.range(0.4, 0.6)), radius: r.range(0.5, 0.8) };
-            wp.lens = Some(EmbeddedLens { warp: Some(warp), vignette: None, ..Default::default() });
+            wp.lens = Some(EmbeddedLens { warp: Some(warp), vignette: None, ..Default::default(), lateral_ca: false });
             wp.lens_dist = r.maybe(0.0, 2.0);
         }
         wp
@@ -817,7 +817,8 @@ mod tests {
                 radius: 0.6,
             }),
             vignette: None,
-            ..Default::default()
+            ..Default::default(),
+            lateral_ca: false,
         };
         let mut cases: Vec<DevelopSettings> = Vec::new();
         let mut s = DevelopSettings::default();
@@ -923,7 +924,8 @@ mod tests {
         let lens = EmbeddedLens {
             warp: Some(EmbeddedWarp { planes: [[1.0, 0.01, 0.0, 0.0, 0.001, 0.002]; 3], center: Point::new(0.4, 0.5), radius: 0.6 }),
             vignette: Some(EmbeddedVignette { k: [0.2, 0.0, 0.0, 0.0, 0.0], center: Point::new(0.4, 0.5), radius: 0.6 }),
-            ..Default::default()
+            ..Default::default(),
+            lateral_ca: false,
         };
         let r = reorient_lens(&lens, Orientation::Rotate90, 300.0, 200.0);
         // rotate 90° cw: (x, y) → (h − y, x)

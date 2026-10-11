@@ -95,6 +95,25 @@ fn rat_vec(v: &[f64]) -> Value {
     Value::Rational(v.iter().map(|&x| rational(x)).collect())
 }
 
+/// The Exif IFD that carries the lens identity, where `lightcraft_meta::from_tiff` reads it back. An empty
+/// `LensMake` is left out rather than invented.
+fn lens_exif(meta: &lightcraft_meta::Metadata) -> Option<IfdBuilder> {
+    let text = |s: &Option<String>| s.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(|v| Value::Ascii(v.to_string()));
+    let spec = meta.lens_spec.filter(|s| s[0] > 0.0).map(|s| Value::Rational(s.iter().map(|&v| rational(v)).collect()));
+    let mut ex = IfdBuilder::new();
+    for (tag, v) in [
+        (t::LENS_SPECIFICATION, spec),
+        (t::LENS_MAKE, text(&meta.lens_make)),
+        (t::LENS_MODEL, text(&meta.lens_model)),
+        (t::LENS_SERIAL_NUMBER, text(&meta.lens_serial_number)),
+    ] {
+        if let Some(v) = v {
+            ex.set(tag, v);
+        }
+    }
+    (!ex.entries.is_empty()).then_some(ex)
+}
+
 /// Serialise `raw` as a DNG.
 pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
     raw.validate()?;
@@ -226,6 +245,9 @@ pub fn write_dng(raw: &RawImage, opts: &DngWriteOptions) -> Result<Vec<u8>> {
         if !list.is_empty() {
             ifd.set(tag, Value::Undefined(opcodes::write_list(list)));
         }
+    }
+    if let Some(ex) = lens_exif(&raw.metadata) {
+        ifd.set_child(t::EXIF_IFD, ex);
     }
 
     match (&raw.data, opts.compression) {

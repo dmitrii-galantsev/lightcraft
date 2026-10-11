@@ -1083,6 +1083,7 @@ mod tests {
             }),
             vignette: None,
             stages: Default::default(),
+            lateral_ca: false,
         };
         let mut s = DevelopSettings::default();
         s.optics.lens_profile = true;

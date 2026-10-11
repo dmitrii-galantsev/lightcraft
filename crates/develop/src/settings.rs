@@ -696,9 +696,9 @@ impl Default for Optics {
 }
 
 /// Lens corrections embedded in the file, converted to the oriented, default-cropped image: a DNG's `OpcodeList3`
-/// (`WarpRectilinear`, `FixVignetteRadial`), or a raw reader's equivalent of the camera's own correction (Panasonic /
-/// Leica RW2 distortion, `lightcraft_raw`'s `vendor/rw2.rs`). This is camera/file data (stored on the photo record, not in the develop
-/// settings); "Enable Profile Corrections" applies it, scaled by the profile distortion/vignetting amounts.
+/// (`WarpRectilinear`, `FixVignetteRadial`), or a raw reader's equivalent of the camera's own correction (Sony
+/// distortion, Panasonic / Leica RW2 distortion). This is camera/file data (stored on the photo record, not in the
+/// develop settings); "Enable Profile Corrections" applies it, scaled by the profile distortion/vignetting amounts.
 /// LightCraft never uses Adobe LCP lens profiles.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -708,6 +708,10 @@ pub struct EmbeddedLens {
     /// A DNG 1.6 `WarpRectilinear2` chain (up to [`WARP_STAGES`] stages, in `OpcodeList3` order; each stage warps
     /// the result of the one before it). When any is set, `warp` is `None`: the chain holds every warp opcode.
     pub stages: [Option<EmbeddedWarpStage>; WARP_STAGES],
+    /// The file records its own lateral-chromatic-aberration table, which the raw reader applies to the CFA before
+    /// demosaic under "Remove Chromatic Aberration" (`SourceInfo::raw_lens_ca`) — not one of the `OpcodeList3`
+    /// corrections above, but the third correction a Lightroom "lens profile" names. Display and presence only.
+    pub lateral_ca: bool,
 }
 
 /// Most warp stages an [`EmbeddedLens`] chain keeps.
@@ -731,6 +735,18 @@ impl EmbeddedLens {
     /// Whether a `WarpRectilinear2` chain is set.
     pub fn has_stages(&self) -> bool {
         self.stages.iter().any(Option::is_some)
+    }
+}
+
+impl EmbeddedLens {
+    /// The corrections the file records, in Lightroom's profile order: distortion, vignetting, chromatic aberration.
+    pub fn recorded(&self) -> [bool; 3] {
+        [self.warp.is_some(), self.vignette.is_some(), self.lateral_ca]
+    }
+
+    /// The file records no correction at all.
+    pub fn is_empty(&self) -> bool {
+        self.recorded() == [false; 3]
     }
 }
 

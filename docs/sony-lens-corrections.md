@@ -24,7 +24,7 @@ is listed individually: a new body is a row, added after the same measurement.
 This adds **distortion and lateral chromatic aberration**. The lateral-CA table is applied to the raw CFA colour planes
 before demosaic (the raw crate's `warp_cfa`, built from the table by `ca_opcode`), not as a post-demosaic
 `WarpRectilinear` (applied there it made the render's fringing worse; PR #824). The vignetting table is parsed but not
-applied (below). Linear YCbCr ARWs (a Sony downsized lossless L/M/S) and non-3:2 camera crops are excluded pending
+applied (below: the camera's own JPEG does not correct vignetting either). Linear YCbCr ARWs (a Sony downsized lossless L/M/S) and non-3:2 camera crops are excluded pending
 validation; the decoder does not guess an aspect crop's radial normalisation. The camera's in-camera Distortion Off
 setting does not erase the table. Newly imported photos use LightCraft's existing embedded-profile default (enabled);
 the profile control can disable or scale the distortion.
@@ -129,6 +129,41 @@ camera JPEG itself measures −0.14 R/G there, so the render's R/G is largely sc
 estimator's scale is confounded. The distortion warp's registration residual against the camera JPEG is unchanged by the
 CA correction (for DSC03836, 0.40 px median off and 0.44 px on with the harness's coarse block matcher), as it should be:
 CA is a colour-plane misregistration, not geometry.
+
+## Vignetting: the camera's own JPEG has none to fit
+
+The vignetting table (`0x7032`) is parsed but **not applied**, and the reason is the reference, not the unit. The
+camera's own JPEG — the project's validation reference — does not carry a vignetting correction on these files, so
+there is nothing in it for a gain model to match.
+
+Measured on the ILCE-7M4 files the earlier sections use, at full resolution (7008 × 4672), against the ARW's own
+embedded full-resolution JPEG (`JpgFromRaw`; the user shoots RAW only, so this is the only camera-produced JPEG):
+
+- **It is distortion-corrected.** Block-wise phase correlation of the camera JPEG against the distortion-corrected
+  render (this file's `WarpRectilinear` under "Enable Lens Corrections") puts every block at ≤ 1 px over the frame,
+  inner and corner; against the *uncorrected* render the same blocks are displaced radially by up to 80 px in the
+  corner (DSC03836). So the embedded JPEG shares the corrected geometry, exactly as the distortion section assumes.
+- **It is not vignetting-corrected.** The per-radius median ratio of the camera JPEG to the *uncorrected* render
+  (scene-linear, midtone band) is flat: 1.00 ± 0.02 from the centre to the corner for DSC03836, and the
+  corner-band / centre-band ratio is 1.01 (DSC03836) and 0.99 (DSC04440, Sigma 70 mm). The camera's corner is within
+  ~2 % of the uncorrected render's — a gain of ≈ 1, not the table's 1 + 4288/15000 = 1.286.
+- **An independent profile-corrected reference does correct it, with this table's convention.** Lightroom Classic's
+  export of DSC03836 (already used as a co-reference in the CA section) is a smooth radial gain over the same
+  scene: the camera-JPEG / Lightroom-export per-radius median ratio falls monotonically from 0.92 at the centre to
+  0.80 at `r/corner = 0.9` and 0.66 at the extreme corner. Removing the global 0.92 tone offset, Lightroom's radial
+  gain is ≈ 1.15 at `r/corner = 0.9` and ≈ 1.4 at the extreme corner, against the table's 1.12 and 1.29 under the
+  modern convention (knot `i` at `i ·` the full-frame crop half diagonal / 15, a source radius `r` reads
+  `1 + v(r)/15000`). The unit is therefore **not** off by a factor as the CA unit was; the earlier "no radial gain
+  model fits" is simply that the camera JPEG is flat.
+
+So the table stays read and not applied: applying it would move LightCraft's render *away* from the camera's own JPEG,
+which is the reference the project validates against. Testing it against a profile-corrected export is not allowed as
+a source of truth (Adobe `.lcp` / profile data is excluded, issue #329), and
+[Sony's own documentation](https://www.sony.com/electronics/support/articles/00018031) says lens compensation is
+applied to a JPEG shot in RAW+JPEG while the raw stays uncompensated — on these embedded previews the distortion is
+baked but the shading is not. A camera JPEG that carries shading compensation (a RAW+JPEG shot, or another body) would
+let the same registration-based comparison fit the gain; until one is available the correction stays off, and the UI
+says so ("Vignetting — Not applied").
 
 ## Older convention: ILCE-7RM4A (Imaging Edge)
 

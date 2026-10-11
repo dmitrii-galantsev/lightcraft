@@ -472,6 +472,20 @@ fn vendor_white_balance_survives_dng_conversion() {
     assert!((after.wb[0] - 2.25).abs() < 1e-3 && (after.wb[2] - 1.7421875).abs() < 1e-3, "{:?}", after.wb);
 }
 
+/// A converted or exported DNG keeps the lens of its source; an empty LensMake stays absent.
+#[test]
+fn lens_identity_survives_dng_conversion() {
+    let mut raw = synthetic(16, 16, Some(Cfa::bayer("RGGB").unwrap()), 1);
+    raw.metadata.lens_make = None;
+    raw.metadata.lens_model = Some("E 35-150mm F2.0-F2.8 A058".into());
+    raw.metadata.lens_spec = Some([35.0, 150.0, 2.0, 2.8]);
+    let packet = lightcraft_meta::write_xmp(&Default::default(), None);
+    let back = decode(&write_dng(&raw, &DngWriteOptions { xmp: Some(packet), ..Default::default() }).unwrap()).unwrap();
+    assert_eq!(back.metadata.lens_model.as_deref(), Some("E 35-150mm F2.0-F2.8 A058"));
+    assert_eq!(back.metadata.lens_make, None);
+    assert_eq!(back.metadata.lens_spec, Some([35.0, 150.0, 2.0, 2.8]));
+}
+
 #[test]
 fn rejects_unsupported_and_broken() {
     let (w, h) = (8, 8);
