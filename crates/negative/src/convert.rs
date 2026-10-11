@@ -123,6 +123,54 @@ impl Image {
                 vals[c].push(if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 });
             }
         }
+        self.quantiles(&mut vals, q)
+    }
+
+    /// The per-channel high quantile `q` over the outer `border` fraction's **chromatic** pixels:
+    /// those whose channel spread is at least `min_spread`. The film base is a coloured (orange)
+    /// margin; a scanner holder's margin is neutral white and brighter, so a bare high percentile
+    /// of the ring reads the holder and over-exposes the conversion. Excluding the neutral margin
+    /// first keeps the base. When no pixel is chromatic (a neutral base, a flat frame) all pixels
+    /// are used, so the statistic degrades to [`Self::border_quantile`].
+    pub fn border_quantile_chromatic(&self, border: f32, q: f32, min_spread: f32) -> [f32; 3] {
+        let mut vals: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut all: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        for (i, p) in self.pixels.iter().enumerate() {
+            if !self.in_border(i, border) {
+                continue;
+            }
+            let spread = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+            let chromatic = spread.is_finite() && spread >= min_spread;
+            for c in 0..3 {
+                let v = if p[c].is_finite() { p[c].clamp(0.0, 1.0) } else { 0.0 };
+                all[c].push(v);
+                if chromatic {
+                    vals[c].push(v);
+                }
+            }
+        }
+        if vals[0].is_empty() { self.quantiles(&mut all, q) } else { self.quantiles(&mut vals, q) }
+    }
+
+    /// The fraction of the outer `border` fraction's pixels that are chromatic (spread ≥
+    /// `min_spread`): low on a neutral holder's margin, high on a coloured film base.
+    pub fn border_chromatic_fraction(&self, border: f32, min_spread: f32) -> f32 {
+        let (mut chromatic, mut n) = (0u64, 0u64);
+        for (i, p) in self.pixels.iter().enumerate() {
+            if !self.in_border(i, border) {
+                continue;
+            }
+            n += 1;
+            let spread = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+            if spread.is_finite() && spread >= min_spread {
+                chromatic += 1;
+            }
+        }
+        if n == 0 { 0.0 } else { chromatic as f32 / n as f32 }
+    }
+
+    /// Per-channel quantile `q` of three value lists.
+    fn quantiles(&self, vals: &mut [Vec<f32>; 3], q: f32) -> [f32; 3] {
         let q = if q.is_finite() { q.clamp(0.0, 1.0) } else { 1.0 };
         let mut out = [0.0f32; 3];
         for c in 0..3 {
@@ -230,9 +278,30 @@ pub fn linearize(img: &Image, scan_gamma: f32) -> Image {
 /// `0.95` is exact on the reference fixtures' uniform strips while leaving 5 % of the ring free.
 pub const BASE_QUANTILE: f32 = 0.95;
 
+/// A pixel counts as film base (not the holder's neutral margin) when its channel spread is at
+/// least this. The film base is a coloured (orange) margin; a scanner holder's white margin is
+/// neutral (spread near zero) and brighter, so a bare high percentile of the ring reads the holder.
+pub const BASE_MIN_SPREAD: f32 = 0.08;
+
+/// Whether a measured base colour is a film base rather than a neutral margin: some channel spread
+/// remains in the measured colour.
+const BASE_MIN_CAST: f32 = 0.12;
+
+/// The inset fractions the film-base ring is searched over (outermost first). The first ring that
+/// looks like a film base is used, so a wide orange margin picks a small inset and a narrow one a
+/// slightly deeper ring.
+const BASE_INSETS: [f32; 16] = [0.0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.125, 0.15, 0.175, 0.20, 0.25];
+
+/// The `border` value that asks the frame to pick the ring itself (the conversion default). Any
+/// `border >= 0` is an explicit inset fraction and is used as given.
+pub const BORDER_AUTO: f32 = -1.0;
+
 /// Measure the film base from the border ring: the ring's per-channel high quantile
-/// ([`BASE_QUANTILE`]). A mean here is the wrong statistic — on the reference fixtures it reads
-/// 110/87/62 against the true 214/169/120.
+/// ([`BASE_QUANTILE`]) over its **chromatic** pixels ([`BASE_MIN_SPREAD`]). A mean here is the wrong
+/// statistic — on the reference fixtures it reads 110/87/62 against the true 214/169/120 — and a
+/// bare high quantile over all the ring's pixels reads a scanner holder's neutral white margin
+/// rather than the orange film base (the conversion then over-exposes). Excluding the neutral
+/// margin first keeps the base.
 ///
 /// The reference project names the film base `blackPointOrigin` (its names are from the negative's
 /// side; the base is the *bright* end) and shows it behaves like a per-frame per-channel maximum:
@@ -241,13 +310,47 @@ pub const BASE_QUANTILE: f32 = 0.95;
 ///
 /// The dark endpoint is *not* measured here (see [`Params::dark`]).
 pub fn measure_base(img: &Image, border: f32) -> [f32; 3] {
-    img.border_quantile(border, BASE_QUANTILE)
+    img.border_quantile_chromatic(border, BASE_QUANTILE, BASE_MIN_SPREAD)
+}
+
+/// The inset fraction the frame says its film base is at, or `None` when the frame shows no
+/// coloured margin near its edge.
+///
+/// The film base is a **chromatic** margin (a coloured film base, not the holder's neutral white).
+/// The search walks the candidate insets outermost-first and returns the first ring that is
+/// dominated by chromatic pixels and whose measured base still carries a colour cast. A frame whose
+/// outer ring is a dark or neutral holder (its film base is elsewhere, or absent) returns `None`,
+/// so the caller can keep the outermost ring and say the ring could not be derived rather than
+/// guess one.
+pub fn detect_base_border(img: &Image) -> Option<f32> {
+    for &b in &BASE_INSETS {
+        if img.border_chromatic_fraction(b, BASE_MIN_SPREAD) < 0.7 {
+            continue;
+        }
+        let base = measure_base(img, b);
+        let cast = base[0].max(base[1]).max(base[2]) - base[0].min(base[1]).min(base[2]);
+        if cast >= BASE_MIN_CAST {
+            return Some(b);
+        }
+    }
+    None
+}
+
+/// The conversion's default base measurement: measure the film base at the ring the frame says it
+/// is at, or — when it shows no such ring — over the frame's outermost ring. Returns the base and
+/// the inset used (`None` when no film-base ring was detected, i.e. the outermost ring was kept).
+pub fn measure_base_auto(img: &Image) -> ([f32; 3], Option<f32>) {
+    match detect_base_border(img) {
+        Some(b) => (measure_base(img, b), Some(b)),
+        None => (measure_base(img, 0.0), None),
+    }
 }
 
 /// Build a `Params` whose base is measured from `img`'s border and whose dark
-/// endpoint is the documented placeholder.
+/// endpoint is the documented placeholder. `border < 0` asks the frame to pick the ring.
 pub fn params_from_measured_base(img: &Image, border: f32) -> Params {
-    Params { base: measure_base(img, border), ..Params::default() }
+    let base = if border < 0.0 { measure_base_auto(img).0 } else { measure_base(img, border) };
+    Params { base, ..Params::default() }
 }
 
 /// Stage 1: invert the negative with the confirmed per-channel linear inverting
@@ -291,19 +394,49 @@ pub fn neutralise(img: &Image, preset: &PresetParams) -> Image {
     })
 }
 
+/// The camera profile's camera-space -> working-space matrix, anchored at the input neutral so that
+/// applying it to a display-RGB image cannot cast a neutral. `white_xy` is the shot white the chain
+/// is evaluated at; `None` when the profile has no usable 3x3 camera colour matrix.
+pub fn profile_matrix(dcp: &Dcp, white_xy: [f64; 2], working: crate::params::WorkingSpace) -> Option<[[f32; 3]; 3]> {
+    let spec = CameraColorSpec::from_dcp(dcp)?;
+    let m = spec.camera_to_working(white_xy, working.xyz_d50_to_working())?;
+    Some(normalize_to_input_neutral(mat3_to_f32(m)))
+}
+
+/// Row-scale `m` so it maps a neutral `(1,1,1)` to `(1,1,1)`. A camera profile's `ColorMatrix` maps
+/// *camera* RGB, whose neutral is the camera's own shot white, not `(1,1,1)`; applied to a
+/// display-RGB image it pushes a neutral to a cast (on the ILCE-7M4 v2.3 profile, `(0.5,0.5,0.5)`
+/// to a green-suppressed magenta). Anchoring the rows at the input neutral makes the profile a
+/// chromaticity correction that leaves neutrals alone. A degenerate response is returned unchanged.
+pub fn normalize_to_input_neutral(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = m;
+    for i in 0..3 {
+        let w = m[i][0] + m[i][1] + m[i][2];
+        if w.abs() > 1e-6 && w.is_finite() {
+            for j in 0..3 {
+                out[i][j] = m[i][j] / w;
+            }
+        }
+    }
+    out
+}
+
 /// Stage 3 (profile half): apply the camera profile — the colour matrix, the
 /// HueSatMap, the LookTable, the BaselineExposureOffset and the tone curve.
+///
+/// The profile's `ColorMatrix` maps **camera** RGB to XYZ(D50); the conversion feeds the profile a
+/// display-RGB image whose neutral is `(1,1,1)`. Applied raw, the matrix turns a neutral magenta
+/// (on the user's ILCE-7M4 v2.3 profile `(0.5,0.5,0.5)` goes to a green-suppressed cast). The
+/// matrix is therefore anchored at the input neutral ([`normalize_to_input_neutral`]) so the profile
+/// corrects chromaticity without casting a neutral; `white_xy` is the shot white the chain is
+/// evaluated at (the pipeline passes the photo's own white).
 ///
 /// Returns the image unchanged when the profile has no usable 3x3 colour matrix.
 /// `amount` (0..1) blends the profiled result over the input.
 pub fn apply_profile(img: &Image, dcp: &Dcp, white_xy: [f64; 2], working: crate::params::WorkingSpace, amount: f32) -> Image {
-    let Some(spec) = CameraColorSpec::from_dcp(dcp) else {
+    let Some(m) = profile_matrix(dcp, white_xy, working) else {
         return img.clone();
     };
-    let Some(m) = spec.camera_to_working(white_xy, working.xyz_d50_to_working()) else {
-        return img.clone();
-    };
-    let m = mat3_to_f32(m);
 
     let hue_sat = dcp.hue_sat_map1.as_ref().and_then(|d| d.decode_hue_sat_map().ok());
     let look = dcp.look_table.as_ref().and_then(|d| d.decode().ok());
@@ -634,5 +767,51 @@ mod tests {
         let p = PresetParams::default();
         assert_eq!(p.tone_profile, ToneProfile::Linear);
         assert_eq!(p.saturation, 0.0);
+    }
+
+    #[test]
+    fn the_profile_matrix_leaves_the_input_neutral_alone() {
+        // A camera ColorMatrix maps camera RGB, so its rows do not sum to one; the anchored matrix
+        // the conversion applies must.
+        let m = [[1.2f32, -0.15, -0.05], [-0.1, 1.1, 0.0], [0.02, -0.08, 0.9]];
+        for r in &normalize_to_input_neutral(m) {
+            assert!((r[0] + r[1] + r[2] - 1.0).abs() < 1e-6, "{r:?}");
+        }
+        // A degenerate row is kept rather than scaled to infinity.
+        let degenerate = [[0.0f32, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        assert_eq!(normalize_to_input_neutral(degenerate), degenerate);
+    }
+
+    /// The real profile tree, read-only, if present (same source as `profiles.rs`).
+    fn nlp_profiles_dir() -> Option<std::path::PathBuf> {
+        let dir = std::env::var_os("NLP_PROFILES_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("git/ai/nlp-re/vendor/camera-profiles")))?;
+        dir.is_dir().then_some(dir)
+    }
+
+    #[test]
+    fn a_camera_profile_keeps_a_neutral_neutral() {
+        // A profile's ColorMatrix maps *camera* RGB; the conversion feeds the profiled stage a
+        // display-RGB image whose neutral is (1,1,1). Applied raw it turned a neutral magenta
+        // ((0.5,0.5,0.5) -> a green-suppressed cast on the user's ILCE-7M4 v2.3 profile). Anchoring
+        // the matrix at the input neutral must keep a neutral neutral through the whole chain.
+        let Some(dir) = nlp_profiles_dir() else {
+            eprintln!("a_camera_profile_keeps_a_neutral_neutral: skipped (set NLP_PROFILES_DIR)");
+            return;
+        };
+        let path = dir.join("Negative Lab - Sony ILCE-7M4 v2.3.dcp");
+        if !path.is_file() {
+            eprintln!("a_camera_profile_keeps_a_neutral_neutral: skipped (no ILCE-7M4 v2.3 profile)");
+            return;
+        }
+        let dcp = crate::profiles::parse(&std::fs::read(&path).unwrap(), "sony").unwrap();
+        for level in [0.25f32, 0.5, 0.75] {
+            let img = Image::fill(4, 4, [level; 3]);
+            let out = apply_profile(&img, &dcp, crate::color::D50_XY, crate::params::WorkingSpace::ProPhoto, 1.0);
+            let p = out.pixels[0];
+            let spread = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+            assert!(spread <= 0.02, "neutral {level} cast to {:?} (spread {spread})", p);
+        }
     }
 }

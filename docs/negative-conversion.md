@@ -10,11 +10,15 @@ the feature's reference and its honest gap list.
 Given a scan, the conversion
 
 1. measures the **film base** from the frame's border ring as the ring's per-channel **95th
-   percentile** (the bright unexposed margin; a high percentile, since the plugin's own base behaves
-   like a per-frame per-channel maximum — robust to a hot pixel on the margin). If the settings
-   arrive with no measured base — a settings file, a preset, copy/paste — the pipeline stage measures
-   it here from the frame's own border, so a missing base never becomes a garbage positive (the
-   degenerate `base = 0` window is refused, treated as the identity),
+   percentile over its chromatic pixels** (the bright unexposed margin; a high percentile, since the
+   plugin's own base behaves like a per-frame per-channel maximum — robust to a hot pixel on the
+   margin, and restricted to coloured pixels since a scanner holder's neutral white margin is
+   brighter than the orange base and would otherwise be read instead). The ring the base is read
+   from is **chosen from the frame** (`negative.border` defaults to auto): the outermost ring
+   dominated by chromatic pixels. If the settings arrive with no measured base — a settings file, a
+   preset, copy/paste — the pipeline stage measures it here from the frame's own border, so a
+   missing base never becomes a garbage positive (the degenerate `base = 0` window is refused,
+   treated as the identity),
 2. inverts **per channel** with a linear window, `out = clamp01((base − in) / (base − dark))`, mapping
    the film base to black and the dark endpoint to white,
 3. neutralises/applies the modelled **preset vocabulary** (density, clips, tone profile, region
@@ -71,7 +75,7 @@ The parameters are ordinary develop controls in `Section::Negative`, so `develop
 |---|---|---|
 | `negative.baseR`, `negative.baseG`, `negative.baseB` | film base, per channel (encoded 0..1); `0` = unmeasured → the pipeline measures it | 0 |
 | `negative.darkR`, `negative.darkG`, `negative.darkB` | dark endpoint, per channel (encoded 0..1) — **an unfitted placeholder** (the real plugin's rule for it is unknown; see Gaps) | grey-wedge fit |
-| `negative.border` | border inset fraction the base is measured over | 0 |
+| `negative.border` | border inset fraction the base is measured over; `-1` = the frame picks it | -1 |
 | `negative.profileAmount` | camera-profile blend, 0..200 % | 100 |
 | `negative.scanGamma`, `negative.outputGamma` | scan / output gamma | 1.0 (already encoded) |
 | `negative.saturation` | preset saturation | 0 |
@@ -101,21 +105,35 @@ lightcraft-cli render grey_wedge_neg8.png -o positive.png --settings negative.js
 ```
 
 The `base_*` fields are optional: leave them unset (or `0`) and the conversion **measures the film
-base itself** (the ring's per-channel 95th percentile, below). `develop.negativeMeasure` records the
-same measurement into the settings; an explicit `base_*` overrides it. `dark_*` is left at its
-placeholder default (the grey-wedge fit).
+base itself** (the ring's per-channel chromatic 95th percentile, below). `develop.negativeMeasure`
+records the same measurement into the settings; an explicit `base_*` overrides it. `dark_*` is left
+at its placeholder default (the grey-wedge fit).
 
-The measurement is the border ring's per-channel **95th percentile** — a *high-end* statistic, not a
-mean. The film base is the bright unexposed margin, and the reference project shows the plugin stores
-it as a per-frame per-channel **maximum**-like value (its `blackPointOrigin` maps to output 0 in 259 of
-332 two-point curves exactly, and `roll.rBlack` is the max over the roll's frames: `nlp-re` notes 07
-and 08). A bare maximum would be moved by a single hot pixel or speck of dust on the margin, so a high
-percentile is used instead. On the `grey_wedge` ring the statistics read: **mean 110/87/62** (wrong by
-more than half), **p90 210/166/118** (misses by 4), **p95 214/169/120** (exact), **bare max
-214/169/120** (also exact, but a single hot pixel would move it). p95 is exact on all four fixtures
-(214/169/120, 200/155/110, 229/198/151, 214/169/120) while leaving 5 % of the ring free of the
-statistic. The ring *geometry* (the reference project's open G2 — how much margin to sample) is still
-only partly pinned.
+The measurement is the border ring's per-channel **95th percentile over its chromatic pixels** — a
+*high-end* statistic, not a mean, and restricted to pixels whose channel spread clears 0.08. The
+film base is the bright unexposed margin, and the reference project shows the plugin stores it as a
+per-frame per-channel **maximum**-like value (its `blackPointOrigin` maps to output 0 in 259 of 332
+two-point curves exactly, and `roll.rBlack` is the max over the roll's frames: `nlp-re` notes 07
+and 08). A bare maximum would be moved by a single hot pixel or speck of dust on the margin, so a
+high percentile is used instead. On the `grey_wedge` ring the statistics read: **mean 110/87/62**
+(wrong by more than half), **p90 210/166/118** (misses by 4), **p95 214/169/120** (exact), **bare
+max 214/169/120** (also exact, but a single hot pixel would move it). p95 is exact on all four
+fixtures (214/169/120, 200/155/110, 229/198/151, 214/169/120) while leaving 5 % of the ring free of
+the statistic.
+
+The **chromatic** restriction is what makes the real scans work. On the user's ILCE-7M4 scans the
+outermost ring carries a bright, near-neutral holder margin; the plain p95 reads it (0.89/0.88/0.89)
+and the conversion is over-exposed (the orange film base only inverts correctly when it is the
+window's white). Restricting the statistic to chromatic pixels reads the orange base instead
+(0.59/0.31/0.22 for `DSC04256`, against the true film base), and the render's per-channel bias drops
+from roughly +125 to mixed sign (measured; see the report). No choice of *ring* fixes this on its
+own — the neutral margin's bright pixels stay in the ring's top percentile however deep the ring is
+taken — which is why the statistic, not only the inset, is corrected. The ring *inset* is still
+chosen from the frame: `detect_base_border` returns the outermost ring whose pixels are mostly
+chromatic, and `develop.negativeMeasure` reports it (`border` in its result). When the frame shows no
+such ring (a dark or neutral holder, or the synthetic fixtures, whose base is a strip on the left
+edge) the outermost ring is kept and the result says the ring could not be derived (`border: null`),
+rather than falling back to a fixed number.
 
 ## Camera profiles: user-supplied, never bundled
 
@@ -133,6 +151,25 @@ preset file is read.
 Every profile the reader accepts is checked end to end against the user's own Negative Lab Pro set
 (read-only, by path) in `crates/negative/src/profiles.rs`'s `real_negative_lab_profiles_*` test: all
 2589 files parse, and the 24 four-channel-camera profiles are the ones rejected loudly.
+
+### The profile must not cast a neutral
+
+A `.dcp`'s `ColorMatrix` maps **camera** RGB; the conversion feeds the profiled stage a display-RGB
+image whose neutral is `(1,1,1)`. Applied raw, the matrix turns a neutral magenta: through the
+user's ILCE-7M4 v2.3 `ColorMatrix` alone, `(0.5,0.5,0.5)` goes to a green-suppressed cast
+(`[0.79,0.34,0.68]` scaled). The matrix is therefore **anchored at the input neutral** — its rows
+are scaled so `(1,1,1)` maps to `(1,1,1)` — before the HueSatMap, LookTable, baseline exposure and
+tone curve run. The result is a chromaticity correction that leaves neutrals alone; the
+`a_camera_profile_keeps_a_neutral_neutral` test holds a neutral at each level to a spread ≤ 0.02
+through the whole chain.
+
+On the five real scans (each photo's own white balance, the frame's own measured base, the central
+80 % against the stored Lightroom preview) the anchored profile **improves** PSNR on all five, while
+before the fix it degraded four of five (measured; see the report). The two candidates in the
+question were tested separately: moving the profile **before** the invert (the stage order) was
+measured and **rejected** — it lowers PSNR against the preview on four of the five while the
+white-point fix raises it on all five — so the profile stays where it was, after the invert, and
+only the matrix anchoring changed.
 
 ## Gaps (carried forward honestly)
 
@@ -154,12 +191,13 @@ parameter where a formula is unknown rather than inventing one.
    `apply_preset` models the preset vocabulary *linearly* and does not close this.
 3. **The preset maths is behavioural.** `addDensity`, the clips, the tone-profile shapes, `LabFade` /
    `LabGlow` and the LUT gains are the reverse-engineering project's hypotheses, not fitted values.
-4. **The profile stage order** (matrix → HueSatMap → LookTable → baseline exposure → tone curve) is a
-   hypothesis, and the profile is applied **after the invert**, on the display-encoded positive,
-   with the shot white fixed to D50. A real camera profile's `ColorMatrix` maps *camera* values, so
-   applied to the inverted, encoded positive it casts: on the user's ILCE-7M4 v2.3 profile a neutral
-   input is pushed to blue (`[0.5,0.5,0.5] → [0.79,0.34,0.68]` through the matrix alone). Four-channel-camera
-   profiles (3×4 `ColorMatrix`) are refused rather than guessed.
+4. **The profile stage order and white point are partly closed.** The profile is applied **after**
+   the invert, on the display-encoded positive, with the shot white fixed to D50; the `ColorMatrix`
+   is anchored at the input neutral so it no longer casts a neutral (above), but whether the profile
+   belongs on the camera-space negative **before** the invert is still open — applying it before the
+   invert was measured against the previews and did not help (it lowers PSNR). The chain's internal
+   stage order (matrix → HueSatMap → LookTable → baseline exposure → tone curve) is still a
+   hypothesis. Four-channel-camera profiles (3×4 `ColorMatrix`) are refused rather than guessed.
 5. **NLP's LUTs, roll analysis and snapshots are out of scope** and not implemented. No plugin data
    is read, decompiled or shipped.
 

@@ -1114,8 +1114,10 @@ impl Enhance {
 /// The confirmed maths is a per-channel linear inverting window
 /// `out = clamp01((base - in) / (base - dark))`, where `base` is the film base measured from the
 /// frame border and `dark` is the negative's dark endpoint. `base` is measured from the border ring's
-/// per-channel 95th percentile — by `develop.negativeMeasure`, or automatically by the pipeline when
-/// it is unmeasured (0). `dark` is an explicit parameter — the real plugin's rule for it is unknown
+/// per-channel 95th percentile over the ring's chromatic pixels (the holder's neutral margin is
+/// excluded) — by `develop.negativeMeasure`, or automatically by the pipeline when it is unmeasured
+/// (0). The ring itself is chosen from the frame (`border` defaults to `-1`). `dark` is an explicit
+/// parameter — the real plugin's rule for it is unknown
 /// and content-dependent (see `lightcraft-negative` and `nlp-re` KNOWN-GAPS G23), so no formula is
 /// invented here. The remaining fields are the modelled preset vocabulary.
 ///
@@ -1137,7 +1139,9 @@ pub struct Negative {
     pub dark_r: f64,
     pub dark_g: f64,
     pub dark_b: f64,
-    /// Border inset fraction the base is measured over (the plugin's `borderBuffer`).
+    /// Border inset fraction the base is measured over (the plugin's `borderBuffer`). `-1` (the
+    /// default) makes the frame pick the ring itself (`detect_base_border`); `0` and up is an
+    /// explicit inset fraction.
     pub border: f64,
     /// A user-supplied `.dcp` camera profile; empty = the profile half is skipped.
     pub profile: String,
@@ -1190,7 +1194,7 @@ impl Default for Negative {
             dark_r: DARK[0],
             dark_g: DARK[1],
             dark_b: DARK[2],
-            border: 0.0,
+            border: -1.0,
             profile: String::new(),
             profile_amount: 100.0,
             scan_gamma: 1.0,

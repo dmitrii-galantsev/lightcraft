@@ -483,10 +483,13 @@ pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
         // balance moves the pixels (`develop.negativeMeasure` reads the same as-shot source).
         let measured = (!s.negative.has_base()).then(|| {
             let mut m = s.clone();
-            let b = lightcraft_negative::measure_base_linear_rec2020(img, m.negative.border as f32);
+            let (b, used) = lightcraft_negative::measure_base_linear_rec2020_full(img, m.negative.border as f32);
             m.negative.base_r = b[0] as f64;
             m.negative.base_g = b[1] as f64;
             m.negative.base_b = b[2] as f64;
+            if let Some(border) = used {
+                m.negative.border = border as f64;
+            }
             m
         });
         local::white_balance(img, info, s);

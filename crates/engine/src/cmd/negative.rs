@@ -19,11 +19,12 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut lightcraft_de
     s.set_develop(id, d, label)
 }
 
-/// Measure the active photo's film base from its preview source.
-fn measure(s: &mut Session, c: &str, border: f64) -> Result<[f32; 3]> {
+/// Measure the active photo's film base from its preview source. `< 0` asks the frame for the
+/// film-base ring; the returned `Option<f32>` is the inset used (or the explicit one).
+fn measure(s: &mut Session, c: &str, border: f64) -> Result<([f32; 3], Option<f32>)> {
     let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
     let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad(c, e))?;
-    Ok(lightcraft_negative::measure_base_linear_rec2020(&src, border.clamp(0.0, 0.49) as f32))
+    Ok(lightcraft_negative::measure_base_linear_rec2020_full(&src, border as f32))
 }
 
 /// `(r, g, b)` of an array of three numbers, or `None`.
@@ -53,10 +54,13 @@ pub fn specs() -> Vec<CommandSpec> {
                 let want_measure = bool_or(p, "measure", enabled && !current.negative.has_base());
                 let measured = if enabled && want_measure { Some(measure(s, c, current.negative.border)?) } else { None };
                 edit(s, c, if enabled { "Convert Negative" } else { "Negative Conversion Off" }, |d| {
-                    if let Some(b) = measured {
+                    if let Some((b, used)) = measured {
                         d.negative.base_r = b[0] as f64;
                         d.negative.base_g = b[1] as f64;
                         d.negative.base_b = b[2] as f64;
+                        if let Some(border) = used {
+                            d.negative.border = border as f64;
+                        }
                     }
                     d.negative.enabled = enabled;
                     Ok(())
@@ -74,21 +78,24 @@ pub fn specs() -> Vec<CommandSpec> {
             "Measure Film Base",
             ["Photo"],
             None,
-            "{border?: number 0..49 (default: the current negative.border)} — measures the film base from the frame's border ring (its per-channel 95th percentile) and stores it per channel → {base: [r,g,b] (encoded 0..1)}",
+            "{border?: number; <0 (default) lets the frame pick the film-base ring} — measures the film base from the frame's border ring (its per-channel 95th percentile over the ring's chromatic pixels, so a holder's neutral margin is not read as the base) and stores it per channel → {base: [r,g,b] (encoded 0..1), border: the inset used or null when the ring could not be derived}",
             has_active,
             |s, p| {
                 let c = "develop.negativeMeasure";
                 let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let current = s.develop_of(id).unwrap_or_default();
                 let border = f64_or(p, "border", current.negative.border);
-                let base = measure(s, c, border)?;
+                let (base, used) = measure(s, c, border)?;
                 edit(s, c, "Measure Film Base", |d| {
                     d.negative.base_r = base[0] as f64;
                     d.negative.base_g = base[1] as f64;
                     d.negative.base_b = base[2] as f64;
+                    if let Some(b) = used {
+                        d.negative.border = b as f64;
+                    }
                     Ok(())
                 })?;
-                Ok(json!({"base": [base[0], base[1], base[2]]}))
+                Ok(json!({"base": [base[0], base[1], base[2]], "border": used}))
             }
         ),
         cmd!(

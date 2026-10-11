@@ -262,7 +262,7 @@ controls! {
     "negative.darkR" => negative.dark_r, "Dark Endpoint R", Negative, -0.1, 1, 7.17 / 255.0, 0.001, 4, Plain;
     "negative.darkG" => negative.dark_g, "Dark Endpoint G", Negative, -0.1, 1, 1.56 / 255.0, 0.001, 4, Plain;
     "negative.darkB" => negative.dark_b, "Dark Endpoint B", Negative, -0.1, 1, -0.89 / 255.0, 0.001, 4, Plain;
-    "negative.border" => negative.border, "Border Buffer", Negative, 0, 49, 0, 1, 0, Plain;
+    "negative.border" => negative.border, "Border Buffer", Negative, -1, 0.49, -1, 0.01, 2, Plain;
     "negative.profileAmount" => negative.profile_amount, "Profile Amount", Negative, 0, 200, 100, 1, 0, Plain;
     "negative.scanGamma" => negative.scan_gamma, "Scan Gamma", Negative, 0.1, 3, 1, 0.01, 2, Plain;
     "negative.outputGamma" => negative.output_gamma, "Output Gamma", Negative, 0.1, 3, 1, 0.01, 2, Plain;

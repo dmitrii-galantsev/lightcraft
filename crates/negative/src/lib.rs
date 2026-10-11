@@ -33,7 +33,9 @@ pub mod profiles;
 pub mod tonecurve;
 
 pub use color::{CalibrationIlluminant, CameraColorSpec, Mat3, Matrix};
-pub use convert::{Image, apply_preset, apply_profile, convert, encode, invert, linearize, measure_base, neutralise};
+pub use convert::{
+    Image, apply_preset, apply_profile, convert, detect_base_border, encode, invert, linearize, measure_base, measure_base_auto, neutralise,
+};
 pub use dcp::{Dcp, DcpError, Generation};
 pub use looktable::{HsbModify, HueSatEncoding, HueSatMap, HueSatTable, HueSatTableData, LookTable, LookTableData, LookTableError};
 pub use params::{ColorDensity, Lut, Params, PresetParams, ProcessOrder, ToneProfile, WorkingSpace};
@@ -47,8 +49,9 @@ use lightcraft_raster::Rgb32f;
 /// a placeholder, not discovered behaviour.
 pub const PLACEHOLDER_DARK: [f32; 3] = [7.17 / 255.0, 1.56 / 255.0, -0.89 / 255.0];
 
-/// The default `borderBuffer` fraction the base is measured over.
-pub const DEFAULT_BORDER: f32 = 0.0;
+/// The default `borderBuffer` setting: the frame picks the film-base ring itself (see
+/// [`detect_base_border`]). Any value `>= 0` is an explicit inset fraction.
+pub const DEFAULT_BORDER: f32 = -1.0;
 
 /// A conversion [`Image`] from a LightCraft RGB buffer.
 pub fn image_from_rgb(src: &Rgb32f) -> Image {
@@ -126,10 +129,18 @@ pub fn apply_linear_rec2020(src: &mut Rgb32f, p: &Params) {
 }
 
 /// Measure the film base from a scene-linear Rec.2020 buffer: round-trip to
-/// encoded sRGB (the space the base was measured on) and take the border mean.
+/// encoded sRGB (the space the base was measured on) and take the border high
+/// quantile. `border < 0` asks the frame to pick the film-base ring.
 pub fn measure_base_linear_rec2020(src: &Rgb32f, border: f32) -> [f32; 3] {
+    measure_base_linear_rec2020_full(src, border).0
+}
+
+/// [`measure_base_linear_rec2020`], also returning the inset the base was measured at (`None` when
+/// the frame showed no film-base ring and its outermost ring was kept).
+pub fn measure_base_linear_rec2020_full(src: &Rgb32f, border: f32) -> ([f32; 3], Option<f32>) {
     let enc = src.map(linear_rec2020_to_srgb_encoded);
-    measure_base(&image_from_rgb(&enc), border)
+    let img = image_from_rgb(&enc);
+    if border < 0.0 { measure_base_auto(&img) } else { (measure_base(&img, border), Some(border)) }
 }
 
 #[cfg(test)]
