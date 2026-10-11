@@ -17,6 +17,27 @@ pub fn scene_linear_pre(img: &mut Rgb32f, info: &SourceInfo, s: &DevelopSettings
     wb_gain(img, info, s, 2f32.powf(s.light.exposure as f32));
 }
 
+/// The film-base white balance of a negative: the per-channel gains that neutralize the measured
+/// film base, proportional to `1/base` in ratio (the plugin's own per-roll state stores exactly
+/// such gains — `greenMultiplier`/`blueMultiplier`, "red is the reference channel") and
+/// **luminance-preserving** in scale: the neutralized base lands at the base's own Rec.2020
+/// luminance, because a white balance must not change exposure — the invariant [`wb_matrix`]
+/// upholds for every other source.
+///
+/// This is the confirmed plugin operation, not a colour temperature. The plugin's recorded
+/// per-photo `Temperature`/`Tint` is how that neutralization is serialized into a Lightroom
+/// control (2000–2650 K on real colour scans), not a scene illuminant: no Kelvin value reproduces
+/// the recorded neutral bases through a colour-temperature model, and adapting the developed
+/// pixels that far drives channels out of gamut (the blue channel of the film margin pegs at 255).
+///
+/// `base_enc` is the film base in encoded sRGB (what `develop.negativeMeasure` stores).
+/// `None` for a degenerate or unmeasured base.
+pub fn negative_base_gains(base_enc: [f64; 3]) -> Option<[f64; 3]> {
+    let b = lightcraft_negative::srgb_encoded_to_linear_rec2020(base_enc.map(|v| v as f32)).map(f64::from);
+    let y = 0.2627 * b[0] + 0.6780 * b[1] + 0.0593 * b[2];
+    (y.is_finite() && y > 1e-6 && b.iter().all(|v| *v > 1e-6)).then(|| b.map(|v| y / v))
+}
+
 /// White balance only (exposure is applied by the per-pixel stage, see [`crate::Prepared`]).
 pub fn white_balance(img: &mut Rgb32f, info: &SourceInfo, s: &DevelopSettings) {
     wb_gain(img, info, s, 1.0);
@@ -27,7 +48,16 @@ pub fn white_balance(img: &mut Rgb32f, info: &SourceInfo, s: &DevelopSettings) {
 /// the new white in camera space, as Lightroom does (so a neutral under the chosen white renders
 /// neutral and saturated colours move as the camera's matrices say); other sources are adapted
 /// with Bradford, luminance-preserving.
+///
+/// A film negative with an explicit white balance is the exception: its white balance is the
+/// film-base neutralization ([`negative_base_gains`]), a diagonal matrix, and the Kelvin value
+/// plays no part. `wb.mode == AsShot` keeps the scan as it came — the confirmed invert window
+/// already neutralizes the base per channel, and the reference fixtures pin that path.
 pub fn wb_matrix_for(info: &SourceInfo, s: &DevelopSettings) -> Option<[[f32; 3]; 3]> {
+    if s.negative.enabled && s.section_enabled("negative") && s.wb.mode != lightcraft_develop::WbMode::AsShot {
+        let gains = s.negative.has_base().then(|| negative_base_gains([s.negative.base_r, s.negative.base_g, s.negative.base_b])).flatten();
+        return gains.map(|g| lightcraft_color::Mat3::diag(g[0], g[1], g[2]).to_f32());
+    }
     let (t, tint) = effective_wb(info, s);
     if (t - info.as_shot_temp).abs() < 1e-6 && (tint - info.as_shot_tint).abs() < 1e-6 {
         return None;
@@ -732,6 +762,63 @@ mod tests {
         assert!(c[0] > c[2], "{c:?}");
         // luminance preserved
         assert!((luminance_2020(c) - 0.3).abs() < 0.01);
+    }
+
+    /// The negative white balance is the film-base neutralization: an explicit white balance on a
+    /// negative sends the measured base to a grey at the base's own luminance, whatever Kelvin the
+    /// settings carry, and `AsShot` keeps the scan (the reference fixtures pin that path).
+    #[test]
+    fn negative_explicit_wb_neutralizes_the_film_base() {
+        let mut s = DevelopSettings::default();
+        s.negative.enabled = true;
+        (s.negative.base_r, s.negative.base_g, s.negative.base_b) = (0.84, 0.66, 0.47);
+        let info = SourceInfo::default();
+        assert!(wb_matrix_for(&info, &s).is_none(), "AsShot keeps the scan");
+        s.wb.mode = lightcraft_develop::WbMode::Custom;
+        s.wb.temp = 2300.0;
+        s.wb.tint = -15.0;
+        let m = wb_matrix_for(&info, &s).unwrap();
+        let b = lightcraft_negative::srgb_encoded_to_linear_rec2020([0.84, 0.66, 0.47]);
+        let w = [
+            m[0][0] * b[0] + m[0][1] * b[1] + m[0][2] * b[2],
+            m[1][0] * b[0] + m[1][1] * b[1] + m[1][2] * b[2],
+            m[2][0] * b[0] + m[2][1] * b[1] + m[2][2] * b[2],
+        ];
+        assert!(w.iter().all(|v| (*v - w[0]).abs() < 1e-5), "the base must come out neutral: {w:?}");
+        let y0 = luminance_2020(b);
+        assert!((luminance_2020(w) - y0).abs() < 1e-5, "the base's luminance must be kept: {w:?} vs {y0}");
+        // a warm Kelvin value must not leak into the matrix: 6500 K is the same neutralization
+        s.wb.temp = 6500.0;
+        let m2 = wb_matrix_for(&info, &s).unwrap();
+        assert_eq!(m, m2, "the Kelvin value plays no part on a negative");
+    }
+
+    /// The invert window's high end is the white-balanced base: after the neutralization the base
+    /// maps to black even though the window was measured on the as-shot scan.
+    #[test]
+    fn the_invert_window_uses_the_white_balanced_base() {
+        let mut s = DevelopSettings::default();
+        s.negative.enabled = true;
+        (s.negative.base_r, s.negative.base_g, s.negative.base_b) = (0.84, 0.66, 0.47);
+        s.wb.mode = lightcraft_develop::WbMode::Custom;
+        s.wb.temp = 2300.0;
+        let base_lin = lightcraft_negative::srgb_encoded_to_linear_rec2020([0.84, 0.66, 0.47]);
+        let mut img = Rgb32f::filled(2, 1, base_lin);
+        let info = SourceInfo::default();
+        let m = wb_matrix_for(&info, &s).unwrap();
+        white_balance(&mut img, &info, &s);
+        let w = [
+            m[0][0] * base_lin[0] + m[0][1] * base_lin[1] + m[0][2] * base_lin[2],
+            m[1][0] * base_lin[0] + m[1][1] * base_lin[1] + m[1][2] * base_lin[2],
+            m[2][0] * base_lin[0] + m[2][1] * base_lin[1] + m[2][2] * base_lin[2],
+        ];
+        let w_enc = lightcraft_negative::linear_rec2020_to_srgb_encoded(w);
+        (s.negative.base_r, s.negative.base_g, s.negative.base_b) = (w_enc[0] as f64, w_enc[1] as f64, w_enc[2] as f64);
+        crate::negative::apply(&mut img, &s);
+        let back = lightcraft_negative::linear_rec2020_to_srgb_encoded(img.data[0]);
+        for c in 0..3 {
+            assert!(back[c] < 0.02, "the neutralized base must invert to black, chan {c}: {back:?}");
+        }
     }
 
     #[test]

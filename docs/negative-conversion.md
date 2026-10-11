@@ -30,13 +30,46 @@ Given a scan, the conversion
 5. encodes the result — producing a positive in the pipeline's normal scene-linear space.
 
 The pipeline runs the conversion in its **scene-linear stage** (`lightcraft_pipeline::negative`). With
-the conversion **on**, the frame's white balance is applied **first**, on the negative — as Lightroom
-and the plugin do, and as the raw camera-space white balance requires (a raw white balance re-develops
-camera pixels; run on the already-inverted positive it re-develops a positive as if it were a
-negative and clips the channels). The film base is measured from the as-shot scan before that white
-balance moves it. The conversion then inverts; tone and the remaining edits follow. Because the
-confirmed window acts on the scan's *encoded* values, the stage round-trips the scene-linear Rec.2020
-buffer through encoded sRGB and back, so the rest of the pipeline is unchanged.
+the conversion **on**, the white balance is applied **first**, on the negative — and for a negative it
+is not a colour temperature at all: an explicit white balance (`wb.mode != AsShot`) is the
+**film-base neutralization** (below). `wb.mode == AsShot` keeps the scan as it came — the confirmed
+invert window already neutralizes the base per channel, and the reference fixtures pin that path. The
+film base is measured from the as-shot scan before that white balance moves it, and the invert
+window's high end is the **white-balanced** base (the plugin's recorded `blackPointOrigin` is
+measured on the analysed frame, after its white balance). The conversion then inverts; tone and the
+remaining edits follow. Because the confirmed window acts on the scan's *encoded* values, the stage
+round-trips the scene-linear Rec.2020 buffer through encoded sRGB and back, so the rest of the
+pipeline is unchanged.
+
+### The white balance of a negative is the base neutralization
+
+A film negative has no scene illuminant to balance for: the plugin's recorded per-photo
+`Temperature`/`Tint` (2000–2650 K on real colour scans) is how it serializes a **per-channel gain
+neutralization of the sampled film base** into a Lightroom control — its own per-roll state stores
+exactly such gains (`greenMultiplier`/`blueMultiplier`, "red is the reference channel"). Three
+measurements pin this down and rule the colour-temperature model out:
+
+- the recorded post-WB base is **neutral** for the current engine's colour frames (channel spread
+  ≤ 5 code values at levels 86–146), and neutral by construction for the black-and-white ones;
+- no Kelvin value reproduces that through a colour-temperature adaptation: LightCraft's adaptation
+  of the developed pixels from the as-shot white to 2000–2650 K leaves the base's green pinned
+  (~215) while the red channel goes *negative* in linear below 2856 K (−30 at 2856 K, −1055 at
+  2000 K) and the blue pegs at 255 from ~4200 K down — the matrix action itself is smooth and
+  monotone in T, so the earlier "non-monotone ring base" was the border statistic switching between
+  the light table and the film as clamping changes which pixels count;
+- the whole operation does not depend on a camera colour model (these Sony raws carry none in
+  LightCraft: `relative_wb`), and the plugin's serialization is solved against whatever model the
+  *rendering* application has — not against a temperature.
+
+So for `negative.enabled` renders with an explicit white balance, `local::wb_matrix_for` returns the
+diagonal gain matrix `g = y/base` that neutralizes the measured base at the base's **own Rec.2020
+luminance** (`y`) — a white balance must not change exposure, the invariant the rest of the white
+balance path upholds — and the Kelvin value plays no part. The recorded faithfulness check
+(`blackPointOrigin`, the plugin's base measurement on the analysed frame) then reproduces within
+±8 code values on the colour scans, against +145…+162 (blue pegged at the ceiling) before.
+
+`wb.mode == AsShot` is the scan as it came: no white balance, the invert window against the as-shot
+base — the path the synthetic fixtures confirm to the 8-bit floor.
 
 ## The maths, and where it lives
 

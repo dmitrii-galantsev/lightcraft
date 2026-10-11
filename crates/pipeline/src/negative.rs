@@ -6,9 +6,12 @@
 //! encoded sRGB, runs the conversion (`lightcraft_negative::convert`), and returns it to
 //! scene-linear Rec.2020 for the rest of the pipeline.
 //!
-//! The film base is measured once by `develop.negativeMeasure` and stored in the settings; the dark
-//! endpoint is an explicit parameter (see `lightcraft_negative`). A camera profile is applied only
-//! when the settings name a user-supplied `.dcp` path.
+//! The film base is measured once by `develop.negativeMeasure` and stored in the settings; the
+//! white balance before the invert is the film-base neutralization (`local::wb_matrix_for`), so
+//! the base `apply` receives through the settings is the *white-balanced* one when the white
+//! balance is explicit (`lin_cpu` rewrites it). The dark endpoint is an explicit parameter (see
+//! `lightcraft_negative`). A camera profile is applied only when the settings name a
+//! user-supplied `.dcp` path.
 
 use lightcraft_develop::DevelopSettings;
 use lightcraft_negative::{ColorDensity, Lut, Params, PresetParams, ProcessOrder, ToneProfile};

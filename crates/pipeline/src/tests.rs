@@ -640,10 +640,21 @@ fn a_negative_is_white_balanced_before_it_is_inverted() {
     let mut got = sampled.clone();
     crate::lin_cpu(&mut got, &info, &plan);
 
-    // the same stages, in the order the fix claims
+    // the same stages, in the order the fix claims — the invert window's high end is the
+    // white-balanced base (`lin_cpu` rewrites it, see its negative branch)
     let mut wb_first = sampled.clone();
+    let m = crate::local::wb_matrix_for(&info, &s).unwrap();
+    let b = lightcraft_negative::srgb_encoded_to_linear_rec2020([0.72f32, 0.52, 0.31]);
+    let w = [
+        m[0][0] * b[0] + m[0][1] * b[1] + m[0][2] * b[2],
+        m[1][0] * b[0] + m[1][1] * b[1] + m[1][2] * b[2],
+        m[2][0] * b[0] + m[2][1] * b[1] + m[2][2] * b[2],
+    ];
+    let w_enc = lightcraft_negative::linear_rec2020_to_srgb_encoded(w);
+    let mut wb_state = s.clone();
     crate::local::white_balance(&mut wb_first, &info, &s);
-    crate::negative::apply(&mut wb_first, &s);
+    (wb_state.negative.base_r, wb_state.negative.base_g, wb_state.negative.base_b) = (w_enc[0] as f64, w_enc[1] as f64, w_enc[2] as f64);
+    crate::negative::apply(&mut wb_first, &wb_state);
     // and in the order that blew the channels on a real scan
     let mut invert_first = sampled.clone();
     crate::negative::apply(&mut invert_first, &s);

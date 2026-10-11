@@ -34,7 +34,8 @@ pub mod tonecurve;
 
 pub use color::{CalibrationIlluminant, CameraColorSpec, Mat3, Matrix};
 pub use convert::{
-    Image, apply_preset, apply_profile, convert, detect_base_border, encode, invert, linearize, measure_base, measure_base_auto, measure_dark,
+    BASE_MIN_SPREAD, BASE_MIN_WARM_FRACTION, BASE_QUANTILE, BASE_WARM_MIN, BASE_WARM_SPREAD, Image, apply_preset, apply_profile, convert,
+    detect_base_border, encode, invert, linearize, measure_base, measure_base_auto, measure_dark,
     neutralise,
 };
 pub use dcp::{Dcp, DcpError, Generation};

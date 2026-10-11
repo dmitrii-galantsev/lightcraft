@@ -19,7 +19,9 @@ use crate::dcp::Dcp;
 use crate::params::{ColorDensity, Params, PresetParams, ProcessOrder, ToneProfile};
 use crate::tonecurve::ToneCurve;
 
-// --------------------------------------------------------------------------- Image
+// ---------------------------------------------------------------------------
+// Image
+// ---------------------------------------------------------------------------
 
 /// An in-memory interleaved RGB float image, values nominally in `[0, 1]`.
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +154,50 @@ impl Image {
         if vals[0].is_empty() { self.quantiles(&mut all, q) } else { self.quantiles(&mut vals, q) }
     }
 
+    /// The film base as [`Self::border_quantile_chromatic`] measures it, with a **warm** tier for
+    /// the camera-scan case: a photographed strip sits on a light table whose surface is
+    /// neutral-to-blue but bright and *itself* chromatic enough to pass a spread filter, so the
+    /// chromatic ring reads the table, not the film. The film base is orange (`R > B`); when a real
+    /// share of the ring is warm, the warm pixels are the film margin and their high quantile is
+    /// the base ([`BASE_WARM_SPREAD`], [`BASE_MIN_WARM_FRACTION`]). Without a warm margin — a
+    /// black-and-white film, a masked strip, a flat-frame fixture — the statistic is exactly
+    /// [`Self::border_quantile_chromatic`].
+    pub fn border_quantile_film_base(&self, border: f32, q: f32, min_spread: f32) -> [f32; 3] {
+        let mut warm: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut chromatic: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut all: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let (mut n, mut warm_n) = (0u64, 0u64);
+        for (i, p) in self.pixels.iter().enumerate() {
+            if !self.in_border(i, border) {
+                continue;
+            }
+            n += 1;
+            let spread = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+            let is_chromatic = spread.is_finite() && spread >= min_spread;
+            let is_warm = p[0].is_finite() && p[0] > BASE_WARM_MIN && p[0] - p[2] >= BASE_WARM_SPREAD;
+            for c in 0..3 {
+                let v = if p[c].is_finite() { p[c].clamp(0.0, 1.0) } else { 0.0 };
+                all[c].push(v);
+                if is_chromatic {
+                    chromatic[c].push(v);
+                }
+                if is_warm {
+                    warm[c].push(v);
+                }
+            }
+            if is_warm {
+                warm_n += 1;
+            }
+        }
+        if warm_n as f32 / n.max(1) as f32 >= BASE_MIN_WARM_FRACTION && !warm[0].is_empty() {
+            self.quantiles(&mut warm, q)
+        } else if !chromatic[0].is_empty() {
+            self.quantiles(&mut chromatic, q)
+        } else {
+            self.quantiles(&mut all, q)
+        }
+    }
+
     /// The fraction of the outer `border` fraction's pixels that are chromatic (spread ≥
     /// `min_spread`): low on a neutral holder's margin, high on a coloured film base.
     pub fn border_chromatic_fraction(&self, border: f32, min_spread: f32) -> f32 {
@@ -216,7 +262,9 @@ impl Image {
     }
 }
 
-// ---------------------------------------------------- ops — the pixel maths the conversion needs
+// ---------------------------------------------------------------------------
+// ops — the pixel maths the conversion needs
+// ---------------------------------------------------------------------------
 
 /// Small, total, deterministic per-value helpers.
 pub mod ops {
@@ -270,7 +318,9 @@ pub mod ops {
     }
 }
 
-// -------------------------------------------------------------------------- Stages
+// ---------------------------------------------------------------------------
+// Stages
+// ---------------------------------------------------------------------------
 
 /// Stage 0: linearise the scan.
 // HYPOTHESIS (nlp-re G1): the scan is stored with some display gamma; 2.2 is the
@@ -295,6 +345,20 @@ pub const BASE_QUANTILE: f32 = 0.95;
 /// least this. The film base is a coloured (orange) margin; a scanner holder's white margin is
 /// neutral (spread near zero) and brighter, so a bare high percentile of the ring reads the holder.
 pub const BASE_MIN_SPREAD: f32 = 0.08;
+
+/// A pixel counts as **warm** — the orange film base direction — when `R − B` reaches this and `R`
+/// sits above [`BASE_WARM_MIN`]. The camera-scan discriminator: a photographed strip's light-table
+/// surface is neutral-to-blue (`R ≤ B`) while the film margin is orange, so the warm subset of the
+/// ring is the film even when the table is bright and chromatic enough to pass [`BASE_MIN_SPREAD`].
+pub const BASE_WARM_SPREAD: f32 = 0.05;
+
+/// Floor under which a pixel is too dark to be film base (a sprocket hole, a shadowed mask edge).
+pub const BASE_WARM_MIN: f32 = 0.1;
+
+/// Warm share of the ring below which there is no colour-film margin in it (a black-and-white
+/// film, a strip masked in coloured plastic, a synthetic fixture) and the statistic keeps the
+/// chromatic/all-pixel behaviour. Scattered warm *content* caught in a ring stays below it.
+pub const BASE_MIN_WARM_FRACTION: f32 = 0.10;
 
 /// Whether a measured base colour is a film base rather than a neutral margin: some channel spread
 /// remains in the measured colour.
@@ -620,7 +684,9 @@ pub fn encode(img: &Image, output_gamma: f32) -> Image {
     img.mapped(|p| [p[0].max(0.0).powf(1.0 / output_gamma), p[1].max(0.0).powf(1.0 / output_gamma), p[2].max(0.0).powf(1.0 / output_gamma)])
 }
 
-// ------------------------------------------------------------------------- convert
+// ---------------------------------------------------------------------------
+// convert
+// ---------------------------------------------------------------------------
 
 /// Run the whole classic conversion end to end. Deterministic.
 pub fn convert(img: &Image, params: &Params) -> Image {

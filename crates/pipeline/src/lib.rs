@@ -476,19 +476,38 @@ pub fn lin_cpu(img: &mut Rgb32f, info: &SourceInfo, p: &Plan<'_>) {
     if s.negative.enabled && s.section_enabled("negative") {
         // The film base is a statistic of the as-shot scan, so measure it before the white
         // balance moves the pixels (`develop.negativeMeasure` reads the same as-shot source).
-        let measured = (!s.negative.has_base()).then(|| {
-            let mut m = s.clone();
-            let (b, used) = lightcraft_negative::measure_base_linear_rec2020_full(img, m.negative.border as f32);
-            m.negative.base_r = b[0] as f64;
-            m.negative.base_g = b[1] as f64;
-            m.negative.base_b = b[2] as f64;
+        let mut state = s.clone();
+        if !s.negative.has_base() {
+            let (b, used) = lightcraft_negative::measure_base_linear_rec2020_full(img, s.negative.border as f32);
+            state.negative.base_r = b[0] as f64;
+            state.negative.base_g = b[1] as f64;
+            state.negative.base_b = b[2] as f64;
             if let Some(border) = used {
-                m.negative.border = border as f64;
+                state.negative.border = border as f64;
             }
-            m
-        });
-        local::white_balance(img, info, s);
-        negative::apply(img, measured.as_ref().unwrap_or(s));
+        }
+        let m = local::wb_matrix_for(info, &state);
+        local::white_balance(img, info, &state);
+        // The invert window's high end is the *white-balanced* base: the plugin's recorded
+        // blackPointOrigin is measured on the analysed frame, after its white balance, so the
+        // window must be evaluated on the same pixels it was measured on.
+        if let Some(m) = m {
+            let b = lightcraft_negative::srgb_encoded_to_linear_rec2020([
+                state.negative.base_r as f32,
+                state.negative.base_g as f32,
+                state.negative.base_b as f32,
+            ]);
+            let w = [
+                m[0][0] * b[0] + m[0][1] * b[1] + m[0][2] * b[2],
+                m[1][0] * b[0] + m[1][1] * b[1] + m[1][2] * b[2],
+                m[2][0] * b[0] + m[2][1] * b[1] + m[2][2] * b[2],
+            ];
+            let w_enc = lightcraft_negative::linear_rec2020_to_srgb_encoded(w);
+            state.negative.base_r = w_enc[0] as f64;
+            state.negative.base_g = w_enc[1] as f64;
+            state.negative.base_b = w_enc[2] as f64;
+        }
+        negative::apply(img, &state);
         local_tone::apply(img, info, p);
     } else {
         // the negative conversion first: it turns the scan into the positive the rest of the chain
