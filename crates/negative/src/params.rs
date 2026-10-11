@@ -191,10 +191,16 @@ pub struct Params {
     /// Per-channel film base (the invert window's white end), encoded `0..1`.
     pub base: [f32; 3],
     /// Per-channel dark endpoint (the invert window's black end), encoded `0..1`.
-    /// **An explicit, documented parameter.** The rule by which the real plugin
-    /// derives it from the image is unknown and content-dependent
-    /// (`KNOWN-GAPS.md` G23); this crate does not invent one.
+    /// Used as an explicit override when [`Self::dark_auto`] is `false`. **An
+    /// explicit, documented parameter.** The rule by which the real plugin derives
+    /// it from the image is content-dependent (`KNOWN-GAPS.md` G23); the evidence
+    /// supports the per-channel robust near-min of the analysed frame (see
+    /// [`crate::convert::measure_dark`]), which is what `dark_auto` selects.
     pub dark: [f32; 3],
+    /// Measure the dark endpoint from the analysed frame ([`crate::convert::measure_dark`])
+    /// instead of using [`Self::dark`]. Off by default so a settings file that pins the
+    /// documented placeholder reproduces the reference run; the conversion commands set it.
+    pub dark_auto: bool,
     pub preset: PresetParams,
     /// Gamma the scan is stored with. `1.0` = already encoded (the confirmed
     /// window is a function of the encoded values).
@@ -215,6 +221,7 @@ impl Default for Params {
         Params {
             base: [1.0; 3],
             dark: [0.0; 3],
+            dark_auto: false,
             preset: PresetParams::default(),
             scan_gamma: 1.0,
             output_gamma: 1.0,

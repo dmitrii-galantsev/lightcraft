@@ -1152,11 +1152,15 @@ pub struct Negative {
     pub base_r: f64,
     pub base_g: f64,
     pub base_b: f64,
-    /// The invert window's dark endpoint per channel (encoded 0..1): an **unfitted, explicit**
-    /// parameter, defaulting to the reference grey-wedge fit.
+    /// The invert window's dark endpoint per channel (encoded 0..1): an **explicit** parameter.
+    /// Used when `dark_auto` is false; its default is the reference grey-wedge fit.
     pub dark_r: f64,
     pub dark_g: f64,
     pub dark_b: f64,
+    /// Measure the dark endpoint from the frame's own per-channel robust near-min instead of using
+    /// `dark_*`. The conversion commands set it, so the real conversion does not depend on the
+    /// placeholder; off by default so a bare settings file reproduces the documented reference run.
+    pub dark_auto: bool,
     /// Border inset fraction the base is measured over (the plugin's `borderBuffer`). `-1` (the
     /// default) makes the frame pick the ring itself (`detect_base_border`); `0` and up is an
     /// explicit inset fraction.
@@ -1212,6 +1216,7 @@ impl Default for Negative {
             dark_r: DARK[0],
             dark_g: DARK[1],
             dark_b: DARK[2],
+            dark_auto: false,
             border: -1.0,
             profile: String::new(),
             profile_amount: 100.0,

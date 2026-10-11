@@ -19,12 +19,49 @@ fn edit(s: &mut Session, c: &str, label: &str, f: impl FnOnce(&mut lightcraft_de
     s.set_develop(id, d, label)
 }
 
-/// Measure the active photo's film base from its preview source. `< 0` asks the frame for the
+/// The active photo's film base from its preview source. `< 0` asks the frame for the
 /// film-base ring; the returned `Option<f32>` is the inset used (or the explicit one).
 fn measure(s: &mut Session, c: &str, border: f64) -> Result<([f32; 3], Option<f32>)> {
     let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
     let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad(c, e))?;
     Ok(lightcraft_negative::measure_base_linear_rec2020_full(&src, border as f32))
+}
+
+/// The dark endpoint the analysed frame would measure from the active photo's preview source: the
+/// per-channel robust near-min. This previews the pipeline's own (post-white-balance) measurement.
+fn measure_dark(s: &mut Session, c: &str) -> Result<[f32; 3]> {
+    let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+    let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad(c, e))?;
+    Ok(lightcraft_negative::measure_dark_linear_rec2020(&src))
+}
+
+/// The active photo's camera names to try when picking a profile, best first (`Make Model`, then
+/// `Model`, then `Make`), all non-empty.
+fn camera_models(s: &Session, id: lightcraft_catalog::PhotoId) -> Vec<String> {
+    let Some(p) = s.catalog.photo(id) else { return Vec::new() };
+    let m = &p.meta;
+    let mut v = vec![m.camera.clone(), m.model.clone(), m.make.clone()];
+    v.retain(|s| !s.trim().is_empty());
+    v.dedup();
+    v
+}
+
+/// The `.dcp` tree to discover profiles under: an explicit `dir`, else the standard Camera Raw
+/// roots this machine exposes.
+fn profile_files(dir: Option<&str>) -> Vec<lightcraft_negative::ProfileFile> {
+    match dir.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => lightcraft_negative::discover(std::path::Path::new(d)),
+        None => lightcraft_negative::discover_default(),
+    }
+}
+
+fn profile_json(f: &lightcraft_negative::ProfileFile) -> Value {
+    json!({
+        "name": f.name,
+        "path": f.path.to_string_lossy(),
+        "camera": f.camera,
+        "generation": f.generation.map(|g| g.label()),
+    })
 }
 
 /// `(r, g, b)` of an array of three numbers, or `None`.
@@ -44,7 +81,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Convert Negative",
             ["Photo"],
             None,
-            "{enabled?: bool (default: toggle), measure?: bool (default: true when enabling without a measured base)} — turns a film-negative scan into a positive; when enabled without a base it is measured from the frame border → {enabled, base}",
+            "{enabled?: bool (default: toggle), measure?: bool (default: true when enabling without a measured base), dark?: [r,g,b]} — turns a film-negative scan into a positive; when enabled without a base it is measured from the frame border. The dark endpoint stays at its setting (the placeholder by default; see develop.negativeDark) → {enabled, base, dark_auto}",
             has_active,
             |s, p| {
                 let c = "develop.negative";
@@ -52,6 +89,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let current = s.develop_of(id).unwrap_or_default();
                 let enabled = bool_or(p, "enabled", !current.negative.enabled);
                 let want_measure = bool_or(p, "measure", enabled && !current.negative.has_base());
+                let dark = triple(p.get("dark"));
                 let measured = if enabled && want_measure { Some(measure(s, c, current.negative.border)?) } else { None };
                 edit(s, c, if enabled { "Convert Negative" } else { "Negative Conversion Off" }, |d| {
                     if let Some((b, used)) = measured {
@@ -62,6 +100,12 @@ pub fn specs() -> Vec<CommandSpec> {
                             d.negative.border = border as f64;
                         }
                     }
+                    if let Some(k) = dark {
+                        d.negative.dark_r = k[0].clamp(-0.1, 1.0);
+                        d.negative.dark_g = k[1].clamp(-0.1, 1.0);
+                        d.negative.dark_b = k[2].clamp(-0.1, 1.0);
+                        d.negative.dark_auto = false;
+                    }
                     d.negative.enabled = enabled;
                     Ok(())
                 })?;
@@ -69,6 +113,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 Ok(json!({
                     "enabled": d.negative.enabled,
                     "base": [d.negative.base_r, d.negative.base_g, d.negative.base_b],
+                    "dark_auto": d.negative.dark_auto,
                     "measured": measured.is_some(),
                 }))
             }
@@ -103,23 +148,83 @@ pub fn specs() -> Vec<CommandSpec> {
             "Negative Dark Endpoint",
             [],
             None,
-            "{dark: [r,g,b] encoded 0..1} — the invert window's dark endpoint, an explicit unfitted parameter (see docs/negative-conversion.md) → {dark}",
+            "{dark?: [r,g,b] encoded 0..1; auto?: bool} — set the invert window's dark endpoint. Give an explicit `dark` triple, or omit it (or pass auto:true) to measure the frame's per-channel robust near-min (see docs/negative-conversion.md) → {dark, dark_auto}",
             has_active,
             |s, p| {
                 let c = "develop.negativeDark";
-                let dark = triple(p.get("dark")).ok_or_else(|| bad(c, "give `dark` as [r,g,b]"))?;
-                if !dark.iter().all(|v| v.is_finite()) {
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let dark = triple(p.get("dark"));
+                let auto = bool_or(p, "auto", dark.is_none());
+                if let Some(k) = dark
+                    && !k.iter().all(|v| v.is_finite())
+                {
                     return Err(bad(c, "`dark` must be three finite numbers"));
                 }
+                let estimate = if auto { Some(measure_dark(s, c)?) } else { None };
                 edit(s, c, "Negative Dark Endpoint", |d| {
-                    d.negative.dark_r = dark[0].clamp(-0.1, 1.0);
-                    d.negative.dark_g = dark[1].clamp(-0.1, 1.0);
-                    d.negative.dark_b = dark[2].clamp(-0.1, 1.0);
+                    if let Some(k) = dark {
+                        d.negative.dark_r = k[0].clamp(-0.1, 1.0);
+                        d.negative.dark_g = k[1].clamp(-0.1, 1.0);
+                        d.negative.dark_b = k[2].clamp(-0.1, 1.0);
+                        d.negative.dark_auto = false;
+                    } else {
+                        d.negative.dark_auto = auto;
+                    }
                     Ok(())
                 })?;
-                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
                 let d = s.develop_of(id).unwrap_or_default();
-                Ok(json!({"dark": [d.negative.dark_r, d.negative.dark_g, d.negative.dark_b]}))
+                Ok(json!({
+                    "dark": [d.negative.dark_r, d.negative.dark_g, d.negative.dark_b],
+                    "dark_auto": d.negative.dark_auto,
+                    "dark_estimate": estimate,
+                }))
+            }
+        ),
+        cmd!(
+            "develop.negativeProfiles",
+            "Negative Camera Profiles",
+            [],
+            None,
+            "{dir?: string — a .dcp tree; default: the standard Camera Raw camera-profile roots} — list the user's own profiles (nothing is bundled) → {dirs: [..], profiles: [{name, path, camera, generation?}]}",
+            |_s| Ok(()),
+            |_s, p| {
+                let dir = str_param(p, "dir");
+                let files = profile_files(dir);
+                let profiles: Vec<Value> = files.iter().map(profile_json).collect();
+                let dirs: Vec<String> = lightcraft_negative::default_dirs().iter().map(|d| d.to_string_lossy().into_owned()).collect();
+                Ok(json!({"dirs": dirs, "profiles": profiles}))
+            }
+        ),
+        cmd!(
+            "develop.negativeProfileAuto",
+            "Negative Camera Profile (Auto)",
+            [],
+            None,
+            "{dir?: string} — pick the best profile for the active photo's camera from the user's own tree (exact camera match, newest generation) and set it. Errors when nothing matches → {path, description, camera}",
+            has_active,
+            |s, p| {
+                let c = "develop.negativeProfileAuto";
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                let files = profile_files(str_param(p, "dir"));
+                let models = camera_models(s, id);
+                let Some(pick) = lightcraft_negative::find_for_models(&files, &models) else {
+                    return Err(bad(
+                        c,
+                        format!(
+                            "no profile for camera {:?} under {:?}",
+                            models.first().cloned().unwrap_or_default(),
+                            str_param(p, "dir").unwrap_or("the standard Camera Raw roots")
+                        ),
+                    ));
+                };
+                let path = pick.path.to_string_lossy().into_owned();
+                let dcp = lightcraft_negative::profiles::load(&pick.path).map_err(|e| bad(c, e))?;
+                let description = lightcraft_negative::profiles::describe(&dcp);
+                edit(s, c, "Negative Camera Profile", |d| {
+                    d.negative.profile = path.clone();
+                    Ok(())
+                })?;
+                Ok(json!({"path": path, "description": description, "camera": pick.camera, "generation": pick.generation.map(|g| g.label())}))
             }
         ),
         cmd!(
@@ -167,7 +272,15 @@ pub fn specs() -> Vec<CommandSpec> {
 mod tests {
     #[test]
     fn spec_ids_are_registered() {
-        for id in ["develop.negative", "develop.negativeMeasure", "develop.negativeDark", "develop.negativeProfile", "develop.negativeReset"] {
+        for id in [
+            "develop.negative",
+            "develop.negativeMeasure",
+            "develop.negativeDark",
+            "develop.negativeProfile",
+            "develop.negativeProfiles",
+            "develop.negativeProfileAuto",
+            "develop.negativeReset",
+        ] {
             assert!(super::specs().iter().any(|c| c.id == id), "missing {id}");
             assert!(crate::cmd::find_command(id).is_some(), "{id} not in the registry");
         }

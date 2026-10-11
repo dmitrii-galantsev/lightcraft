@@ -185,6 +185,19 @@ impl Image {
         out
     }
 
+    /// The per-channel low quantile `q` (`0..1`) over the whole frame: the dark endpoint's
+    /// statistic (see [`measure_dark`]).
+    pub fn frame_quantile(&self, q: f32) -> [f32; 3] {
+        let mut vals: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        for p in &self.pixels {
+            for c in 0..3 {
+                let v = if p[c].is_finite() { p[c].clamp(0.0, 1.0) } else { 0.0 };
+                vals[c].push(v);
+            }
+        }
+        self.quantiles(&mut vals, q)
+    }
+
     /// Per-channel minimum and maximum over clamped values.
     pub fn min_max(&self) -> ([f32; 3], [f32; 3]) {
         if self.pixels.is_empty() {
@@ -311,6 +324,25 @@ pub const BORDER_AUTO: f32 = -1.0;
 /// The dark endpoint is *not* measured here (see [`Params::dark`]).
 pub fn measure_base(img: &Image, border: f32) -> [f32; 3] {
     img.border_quantile_chromatic(border, BASE_QUANTILE, BASE_MIN_SPREAD)
+}
+
+/// The percentile of the analysed frame the dark endpoint is read at: a **robust near-min**. The
+/// endpoint is the frame's per-channel low end (`nlp-re` notes 07/08: `whitePointOrigin` is the
+/// across-roll *minimum*, min-like; run-01's grey wedge fits it at the 8-bit floor just below the
+/// input minimum, and the one fully-known real frame, `DSC05279`, has endpoint 10 against a frame
+/// minimum of 0 and a p1 of 22). A bare minimum would follow a single dark speck of dust, so a low
+/// percentile just above it is used; on the faithful black-and-white frames the best-unbiased
+/// percentile is 0.2–0.5, so 0.5 is used. This is the *form* the evidence supports; the exact
+/// percentile is not pinned (see `nlp-re` notes 09/10) and is documented as such in
+/// `docs/negative-conversion.md`.
+pub const DARK_QUANTILE: f32 = 0.005;
+
+/// Measure the dark endpoint from the analysed (pre-inversion) frame: the per-channel low quantile
+/// [`DARK_QUANTILE`] over the whole frame. The analysed frame is the negative after the film-base
+/// white balance, in the encoded space the invert window acts in — so this is measured on the same
+/// frame the window sees, not on the as-shot scan the film base is measured from.
+pub fn measure_dark(img: &Image) -> [f32; 3] {
+    img.frame_quantile(DARK_QUANTILE)
 }
 
 /// The inset fraction the frame says its film base is at, or `None` when the frame shows no
@@ -708,6 +740,39 @@ mod tests {
         let img = Image::from_pixels(w, h, px).unwrap();
         assert_eq!(measure_base(&img, 0.0), base);
         assert_eq!(img.border_quantile(0.0, 1.0), [1.0, 1.0, 1.0], "a bare max would move");
+    }
+
+    #[test]
+    fn measure_dark_reads_a_robust_near_min() {
+        // A mid frame with a 10 % dark strip: the near-min reads the strip, not the mid.
+        let (w, h) = (40usize, 40usize);
+        let dark = [0.05f32, 0.10, 0.15];
+        let mut px = vec![[0.5f32, 0.5, 0.5]; w * h];
+        for y in 0..h {
+            for x in 0..4 {
+                px[y * w + x] = dark;
+            }
+        }
+        let img = Image::from_pixels(w, h, px).unwrap();
+        assert_eq!(measure_dark(&img), dark);
+    }
+
+    #[test]
+    fn measure_dark_ignores_isolated_dark_specks() {
+        // A couple of near-black specks (dust, a scratch) are far below the percentile and must not
+        // drag the endpoint below the frame's dark content.
+        let (w, h) = (100usize, 100usize);
+        let dark = [0.10f32, 0.12, 0.14];
+        let mut px = vec![[0.6f32, 0.6, 0.6]; w * h];
+        for y in 0..h {
+            for x in 0..10 {
+                px[y * w + x] = dark;
+            }
+        }
+        px[0] = [0.0, 0.0, 0.0];
+        px[1] = [0.0, 0.0, 0.0];
+        let img = Image::from_pixels(w, h, px).unwrap();
+        assert_eq!(measure_dark(&img), dark);
     }
 
     #[test]

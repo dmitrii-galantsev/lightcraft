@@ -34,19 +34,24 @@ pub mod tonecurve;
 
 pub use color::{CalibrationIlluminant, CameraColorSpec, Mat3, Matrix};
 pub use convert::{
-    Image, apply_preset, apply_profile, convert, detect_base_border, encode, invert, linearize, measure_base, measure_base_auto, neutralise,
+    Image, apply_preset, apply_profile, convert, detect_base_border, encode, invert, linearize, measure_base, measure_base_auto, measure_dark,
+    neutralise,
 };
 pub use dcp::{Dcp, DcpError, Generation};
 pub use looktable::{HsbModify, HueSatEncoding, HueSatMap, HueSatTable, HueSatTableData, LookTable, LookTableData, LookTableError};
 pub use params::{ColorDensity, Lut, Params, PresetParams, ProcessOrder, ToneProfile, WorkingSpace};
+pub use profiles::{ProfileFile, default_dirs, discover, discover_default, find_for_models};
 pub use tonecurve::{ToneCurve, ToneCurveError};
 
 use lightcraft_raster::Rgb32f;
 
-/// The dark endpoint of the invert window is an **unfitted image statistic**
-/// (`nlp-re` KNOWN-GAPS G23). This is the placeholder the LightCraft controls
-/// default to — the grey-wedge fit, in encoded `0..1` — and it is documented as
-/// a placeholder, not discovered behaviour.
+/// The dark endpoint of the invert window. It is a **content-dependent statistic of the analysed
+/// frame**: the per-channel robust near-min (`nlp-re` notes 07/08: `whitePointOrigin` is the
+/// across-roll *minimum*, min-like; the one fully-known real frame has endpoint 10 against a frame
+/// minimum of 0). [`convert::measure_dark`] implements it. This constant is the **placeholder** the
+/// LightCraft controls default to — the grey-wedge fit, in encoded `0..1` — kept so a bare settings
+/// file reproduces the documented reference run; the conversion commands switch to the measured
+/// endpoint (`Params::dark_auto`). It is documented as a placeholder, not discovered behaviour.
 pub const PLACEHOLDER_DARK: [f32; 3] = [7.17 / 255.0, 1.56 / 255.0, -0.89 / 255.0];
 
 /// The default `borderBuffer` setting: the frame picks the film-base ring itself (see
@@ -119,7 +124,15 @@ pub fn apply_linear_rec2020(src: &mut Rgb32f, p: &Params) {
     for px in &mut encoded.data {
         *px = linear_rec2020_to_srgb_encoded(*px);
     }
-    let out = convert(&image_from_rgb(&encoded), p);
+    let mut params = p.clone();
+    if params.dark_auto {
+        // Measure on the encoded frame the window inverts (post-white-balance, pre-profile): the same
+        // frame `invert` sees, so the endpoint is self-consistent with the window. The plugin's own
+        // endpoint is a statistic of the *profiled* frame; the residual is the profile stage order
+        // (see Gaps 4).
+        params.dark = measure_dark(&image_from_rgb(&encoded));
+    }
+    let out = convert(&image_from_rgb(&encoded), &params);
     src.width = out.width;
     src.height = out.height;
     src.data = out.pixels;
@@ -141,6 +154,15 @@ pub fn measure_base_linear_rec2020_full(src: &Rgb32f, border: f32) -> ([f32; 3],
     let enc = src.map(linear_rec2020_to_srgb_encoded);
     let img = image_from_rgb(&enc);
     if border < 0.0 { measure_base_auto(&img) } else { (measure_base(&img, border), Some(border)) }
+}
+
+/// Measure the dark endpoint from a scene-linear Rec.2020 buffer: round-trip to encoded sRGB (the
+/// space the invert window acts in) and take the frame's per-channel robust near-min
+/// ([`convert::measure_dark`]). This is a *preview* of what the pipeline will measure on the
+/// white-balanced analysed frame; the pipeline measures its own, authoritative value.
+pub fn measure_dark_linear_rec2020(src: &Rgb32f) -> [f32; 3] {
+    let enc = src.map(linear_rec2020_to_srgb_encoded);
+    measure_dark(&image_from_rgb(&enc))
 }
 
 #[cfg(test)]
@@ -165,5 +187,46 @@ mod tests {
         let base_img = Rgb32f::filled(2, 1, [0.84, 0.66, 0.47]);
         let out = convert_rgb(&base_img, &p);
         assert!(out.data.iter().all(|v| v.iter().all(|c| c.abs() < 1e-6)), "{:?}", out.data);
+    }
+
+    #[test]
+    fn dark_auto_maps_the_frame_near_min_to_white() {
+        // `dark_auto` reads the endpoint from the analysed frame; the near-min pixel must then map
+        // to (near) white, which the placeholder dark (≈0) does not do for a frame whose dark end is
+        // much above zero.
+        let base_enc = [0.84f32, 0.66, 0.47];
+        let dark_enc = [0.30f32, 0.24, 0.18];
+        let mid_enc = [0.60f32, 0.50, 0.40];
+        let lin = srgb_encoded_to_linear_rec2020;
+        let (w, h) = (40usize, 40usize);
+        let mut img = Rgb32f::filled(w, h, lin(mid_enc));
+        for y in 0..h {
+            for x in 0..4 {
+                img.set(x, y, lin(base_enc));
+            }
+            for x in 8..12 {
+                img.set(x, y, lin(dark_enc));
+            }
+        }
+        let p = Params { base: base_enc, dark_auto: true, ..Params::default() };
+        let measured = measure_dark_linear_rec2020(&img);
+        assert!(measured.iter().all(|v| *v > 0.0), "{measured:?}");
+        apply_linear_rec2020(&mut img, &p);
+        let out_dark = linear_rec2020_to_srgb_encoded(img.get(9, 0));
+        assert!(out_dark.iter().all(|v| *v > 0.97), "near-min should map to white, got {out_dark:?}");
+        // With the placeholder dark the same frame stays well below white at the dark end.
+        let mut img2 = Rgb32f::filled(w, h, lin(mid_enc));
+        for y in 0..h {
+            for x in 0..4 {
+                img2.set(x, y, lin(base_enc));
+            }
+            for x in 8..12 {
+                img2.set(x, y, lin(dark_enc));
+            }
+        }
+        let p2 = Params { base: base_enc, ..Params::default() };
+        apply_linear_rec2020(&mut img2, &p2);
+        let placeholder_dark = linear_rec2020_to_srgb_encoded(img2.get(9, 0));
+        assert!(placeholder_dark[0] < 0.9, "placeholder should not reach white, got {placeholder_dark:?}");
     }
 }

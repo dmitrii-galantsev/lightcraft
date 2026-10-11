@@ -41,6 +41,7 @@ pub fn params(s: &DevelopSettings) -> Params {
     Params {
         base: [n.base_r as f32, n.base_g as f32, n.base_b as f32],
         dark: [n.dark_r as f32, n.dark_g as f32, n.dark_b as f32],
+        dark_auto: n.dark_auto,
         preset,
         scan_gamma: n.scan_gamma as f32,
         output_gamma: n.output_gamma as f32,

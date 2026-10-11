@@ -53,6 +53,73 @@ fn tmp(name: &str) -> std::path::PathBuf {
     d.join(name)
 }
 
+/// `develop.negativeDark` with no explicit endpoint measures the frame's per-channel robust near-min;
+/// a render with `dark_auto` maps that near-min to white, unlike the placeholder default.
+#[test]
+fn render_negative_dark_auto_measures_the_frame() {
+    let base = [214.0 / 255.0, 169.0 / 255.0, 120.0 / 255.0];
+    let dark = [7.17 / 255.0, 1.56 / 255.0, -0.89 / 255.0];
+    let input = tmp("neg-dark-in.png");
+    // The fixture's interior runs base -> 0.9 of the window; its near-min is 90 % of the way down.
+    base_ring_negative_png(&input, base, dark);
+    let want: Vec<f64> = (0..3).map(|c| (base[c] - 0.9 * (base[c] - dark[c])) * 255.0).collect();
+
+    let (ok, lines, err) = run_cli(&["--import", input.to_str().unwrap(), "develop.negativeDark"], None);
+    assert!(ok, "{err}: {lines:?}");
+    let r = &lines[0]["result"];
+    assert_eq!(r["dark_auto"], json!(true));
+    let est = r["dark_estimate"].as_array().expect("dark_estimate");
+    for c in 0..3 {
+        let v = est[c].as_f64().unwrap() * 255.0;
+        assert!((v - want[c]).abs() <= 3.0, "ch{c}: estimate {v} vs near-min {}", want[c]);
+    }
+
+    // A render with `dark_auto` reaches white at that near-min; the placeholder does not.
+    let render = |tag: &str, auto: bool| -> lightcraft_raster::Rgba8 {
+        let file = tmp(&format!("neg-dark-{tag}.json"));
+        std::fs::write(&file, serde_json::to_vec(&json!({"negative": {"enabled": true, "dark_auto": auto, "tone_profile": 1}})).unwrap()).unwrap();
+        let out = tmp(&format!("neg-dark-{tag}.png"));
+        let st = Command::new(BIN)
+            .args(["render", input.to_str().unwrap(), "-o", out.to_str().unwrap(), "--settings", file.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(st.success());
+        lightcraft_codecs::decode(&std::fs::read(&out).unwrap(), Default::default()).unwrap().to_srgb8()
+    };
+    let auto = render("auto", true);
+    let placeholder = render("placeholder", false);
+    // The darkest interior region is x >= 30 (0.9 of the window): with the measured endpoint it maps
+    // to white, with the placeholder well below.
+    let w = auto.width;
+    let px = 20 * w + 40;
+    let (a, p) = (auto.data[px], placeholder.data[px]);
+    assert!(a[0] >= 250, "measured endpoint should reach white, got {a:?}");
+    assert!(p[0] < 240, "the placeholder must not reach white, got {p:?}");
+}
+
+/// `develop.negativeProfiles` lists a `.dcp` tree by filename (nothing parsed, nothing bundled).
+#[test]
+fn develop_negative_profiles_lists_the_tree() {
+    let dir = tmp("profiles-tree");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in ["Negative Lab - Sony ILCE-7M4 v2.3.dcp", "Negative Lab - Sony ILCE-7M4.dcp", "notes.txt"] {
+        std::fs::write(dir.join(n), b"x").unwrap();
+    }
+    let png = tmp("profiles-input.png");
+    gradient_png(&png);
+    let (ok, lines, err) = run_cli(&["--import", png.to_str().unwrap(), "develop.negativeProfiles", &format!("dir={}", dir.display())], None);
+    assert!(ok, "{err}: {lines:?}");
+    let list = lines[0]["result"]["profiles"].as_array().expect("profiles");
+    assert_eq!(list.len(), 2, "{list:?}");
+    assert!(list.iter().any(|p| p["name"] == "Negative Lab - Sony ILCE-7M4 v2.3.dcp" && p["generation"] == "v2.3"));
+    // Auto-picking needs a photo camera, which a bare PNG import has not: it errors rather than
+    // silently selecting nothing.
+    let (ok, lines, _) = run_cli(&["--import", png.to_str().unwrap(), "develop.negativeProfileAuto", &format!("dir={}", dir.display())], None);
+    assert!(!ok);
+    assert!(lines[0]["error"].to_string().contains("no profile for camera"), "{lines:?}");
+}
+
 fn gradient_png(path: &std::path::Path) {
     let img = lightcraft_raster::Rgba8::from_fn(120, 80, |x, y| [(x * 2) as u8, (y * 3) as u8, 100, 255]);
     let png = lightcraft_codecs::encode_png(&lightcraft_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap();

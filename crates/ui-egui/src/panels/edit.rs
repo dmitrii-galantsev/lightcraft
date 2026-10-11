@@ -437,14 +437,25 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui, id: PhotoId) {
         if text_button(ui, "negative-measure", crate::i18n::tr("Measure Film Base"), false).clicked() {
             let _ = app.run("develop.negativeMeasure", json!({}));
         }
+        // The camera profile is a .dcp the user owns — LightCraft ships none. The standard Camera Raw
+        // tree is searched; "Match this camera" picks the newest generation for the active camera.
+        sub_title(ui, crate::i18n::tr("Camera Profile"));
+        negative_profile_picker(app, ui, d);
         sub_title(ui, crate::i18n::tr("Film Base"));
         for id in ["negative.baseR", "negative.baseG", "negative.baseB"] {
             control(app, ui, d, id, on);
         }
         control(app, ui, d, "negative.border", on);
-        sub_title(ui, crate::i18n::tr("Dark Endpoint (unfitted)"));
+        sub_title(ui, crate::i18n::tr("Dark Endpoint"));
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            if text_button(ui, "negative-dark-auto", crate::i18n::tr("Auto (frame near-min)"), d.negative.dark_auto).clicked() {
+                let _ = app.run("develop.negativeDark", if d.negative.dark_auto { json!({"auto": false}) } else { json!({}) });
+            }
+        });
+        // The three sliders are an explicit override; they are inert while the frame is measured.
         for id in ["negative.darkR", "negative.darkG", "negative.darkB"] {
-            control(app, ui, d, id, on);
+            control(app, ui, d, id, on && !d.negative.dark_auto);
         }
         sub_title(ui, crate::i18n::tr("Preset"));
         for id in [
@@ -583,6 +594,54 @@ fn section(
         body(app, ui, d);
     }
     divider(ui);
+}
+
+/// The negative camera-profile picker: the user's own `.dcp` tree under the standard Camera Raw
+/// folder, grouped by camera, with the current profile ticked. LightCraft bundles no profile, so
+/// this is the only way to reach the user's own (see `develop.negativeProfiles`).
+fn negative_profile_picker(app: &mut LightcraftApp, ui: &mut egui::Ui, d: &DevelopSettings) {
+    let cur = d.negative.profile.clone();
+    let label = if cur.trim().is_empty() {
+        crate::i18n::tr("None").to_string()
+    } else {
+        std::path::Path::new(cur.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| cur.clone())
+    };
+    ui.horizontal(|ui| {
+        ui.add_space(24.0);
+        let r = ui.menu_button(label, |ui| {
+            ui.set_min_width(300.0);
+            let profiles: Vec<Value> =
+                app.run("develop.negativeProfiles", json!({})).ok().and_then(|v| v["profiles"].as_array().cloned()).unwrap_or_default();
+            if profiles.is_empty() {
+                ui.label(crate::i18n::tr("No profiles found under the Camera Raw folder"));
+                return;
+            }
+            if ui.button(crate::i18n::tr("Match this camera")).clicked() {
+                let _ = app.run("develop.negativeProfileAuto", json!({}));
+            }
+            if !cur.trim().is_empty() && ui.button(crate::i18n::tr("None")).clicked() {
+                let _ = app.run("develop.negativeProfile", json!({"path": ""}));
+            }
+            ui.separator();
+            let t = Tokens::get(ui.ctx());
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                let mut camera = String::new();
+                for p in &profiles {
+                    let name = p["name"].as_str().unwrap_or("");
+                    let path = p["path"].as_str().unwrap_or("");
+                    let c = p["camera"].as_str().unwrap_or("");
+                    if c != camera {
+                        ui.label(egui::RichText::new(c).font(t.semibold(11.0)).color(t.text_dim));
+                        camera = c.to_string();
+                    }
+                    if ui.selectable_label(cur.trim() == path, name).clicked() {
+                        let _ = app.run("develop.negativeProfile", json!({"path": path}));
+                    }
+                }
+            });
+        });
+        register(ui.ctx(), "negative-profile-menu", r.response.rect);
+    });
 }
 
 // ------------------------------------------------------------------------------ histogram

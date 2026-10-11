@@ -20,7 +20,10 @@ Given a scan, the conversion
    missing base never becomes a garbage positive (the degenerate `base = 0` window is refused,
    treated as the identity),
 2. inverts **per channel** with a linear window, `out = clamp01((base − in) / (base − dark))`, mapping
-   the film base to black and the dark endpoint to white,
+   the film base to black and the dark endpoint to white. `dark` is the analysed frame's per-channel
+   **robust near-min** when `negative.dark_auto` is set (the conversion commands set it, so a user's
+   conversion does not depend on the placeholder), and an explicit `negative.darkR/G/B` otherwise
+   (Gaps 1),
 3. neutralises/applies the modelled **preset vocabulary** (density, clips, tone profile, region
    colour, fade/glow, LUT),
 4. applies a **camera profile** when the user supplies one, and
@@ -62,10 +65,12 @@ Every action is a command, dispatched by id from the UI, CLI, control channel an
 
 | command | menu | what |
 |---|---|---|
-| `develop.negative` | Photo | toggle the conversion; when enabling without a base, measure it from the border |
+| `develop.negative` | Photo | toggle the conversion; when enabling without a base, measure it from the border, and measure the dark endpoint from the analysed frame (unless an explicit `dark` is given) |
 | `develop.negativeMeasure` | Photo | measure the film base from the frame's border ring |
-| `develop.negativeDark` | — | set the dark endpoint parameter |
+| `develop.negativeDark` | — | set the dark endpoint parameter, or (no `dark`) measure it from the frame |
 | `develop.negativeProfile` | — | set/clear the user-supplied `.dcp` path (validated) |
+| `develop.negativeProfiles` | — | list the user's own `.dcp` tree (nothing bundled) |
+| `develop.negativeProfileAuto` | — | pick the best profile for the active photo's camera and set it |
 | `develop.negativeReset` | — | back to the defaults (off) |
 
 The parameters are ordinary develop controls in `Section::Negative`, so `develop.set` /
@@ -74,7 +79,8 @@ The parameters are ordinary develop controls in `Section::Negative`, so `develop
 | control id | meaning | default |
 |---|---|---|
 | `negative.baseR`, `negative.baseG`, `negative.baseB` | film base, per channel (encoded 0..1); `0` = unmeasured → the pipeline measures it | 0 |
-| `negative.darkR`, `negative.darkG`, `negative.darkB` | dark endpoint, per channel (encoded 0..1) — **an unfitted placeholder** (the real plugin's rule for it is unknown; see Gaps) | grey-wedge fit |
+| `negative.darkR`, `negative.darkG`, `negative.darkB` | dark endpoint, per channel (encoded 0..1) — the explicit override; used when `dark_auto` is off | grey-wedge fit |
+| `negative.dark_auto` | measure the dark endpoint from the analysed frame's per-channel robust near-min (Gaps 1); the conversion commands set it | false |
 | `negative.border` | border inset fraction the base is measured over; `-1` = the frame picks it | -1 |
 | `negative.profileAmount` | camera-profile blend, 0..200 % | 100 |
 | `negative.scanGamma`, `negative.outputGamma` | scan / output gamma | 1.0 (already encoded) |
@@ -152,6 +158,21 @@ Every profile the reader accepts is checked end to end against the user's own Ne
 (read-only, by path) in `crates/negative/src/profiles.rs`'s `real_negative_lab_profiles_*` test: all
 2589 files parse, and the 24 four-channel-camera profiles are the ones rejected loudly.
 
+### Finding the profile: the Develop panel picker
+
+Negative Lab Pro installs its profiles into Adobe Camera Raw's own tree
+(`%APPDATA%\Adobe\CameraRaw\CameraProfiles\NegativeLab Camera Profiles\` on Windows,
+`~/Library/Application Support/Adobe/CameraRaw/CameraProfiles/` on macOS, `~/.config/Adobe/…` on
+Linux) — three generations of each camera's profile, `base`, `v2` and `v2.3`. LightCraft's Develop
+panel (Photo → Negative → **Camera Profile**) shows the current profile and opens a list of every
+`.dcp` it finds under those roots, grouped by camera, with **Match this camera** picking the newest
+generation for the active photo. `develop.negativeProfiles` lists the same tree (filenames only, no
+parsing, so thousands are cheap) and `develop.negativeProfileAuto` does the pick; both search the
+standard roots by default and take an explicit `dir` otherwise. `develop.negativeProfileAuto` matches
+the photo's Exif `Make Model`/`Model` against the profile filename, prefers `v2.3`, then `v2`, then
+`base`, and errors (rather than selecting nothing) when no profile matches. A profile set that lives
+somewhere else is reached with the explicit `{"path": "…"}` form of `develop.negativeProfile`.
+
 ### The profile must not cast a neutral
 
 A `.dcp`'s `ColorMatrix` maps **camera** RGB; the conversion feeds the profiled stage a display-RGB
@@ -176,14 +197,26 @@ only the matrix anchoring changed.
 These are unsolved in the reference project too; this feature implements an explicit, documented
 parameter where a formula is unknown rather than inventing one.
 
-1. **The dark endpoint is not fitted (the load-bearing unknown).** `dark` is the input that maps to
-   white; the real plugin derives it from a *scene statistic* whose rule is unknown and
-   content-dependent (its recorded `whitePointOrigin`). It is an explicit parameter
-   (`negative.darkR/G/B`, labelled **"Dark Endpoint (unfitted)"** in the Develop panel) and the
-   default is the reference grey-wedge fit, a **placeholder**, not discovered behaviour. On
-   artificial images the difference is visible: on the reference `channel_ramp`, the plugin's
-   scene-derived endpoint hard-clips the red ramp (39.8 % of the red row at 255, mean |error| vs the
-   known positive 42.8), while the placeholder endpoint clips 0 % (mean |error| 13.9).
+1. **The dark endpoint's statistic is implemented; its exact percentile is not fitted.** `dark`
+   is the input that maps to white. The real plugin derives it from the analysed frame
+   (its recorded `whitePointOrigin`), and the evidence now fixes the **form**: a per-channel
+   **robust near-min**. `whitePointOrigin` is the across-roll *minimum* of the frames (`roll.rWhite =
+   min over frames`), the one fully-known real frame (`DSC05279`) has endpoint 10 against a frame
+   minimum of 0 and a p1 of 22, and on the neutral `run-01` grey wedge the fit lands at the 8-bit
+   floor just below the input minimum. `lightcraft_negative::convert::measure_dark` implements it as
+   the per-channel **0.5th percentile** of the analysed frame — the best-unbiased percentile on the
+   frames whose pre-conversion render is faithful (the black-and-white negatives: rms 8–9 code
+   values against a target spread of 16), and a *low* percentile so a single speck of dust (the
+   frame's bare minimum) cannot move it. It is **opt-in**: `develop.negativeDark` with no `dark`
+   (or the Auto button) sets `dark_auto`, and the default stays the documented **placeholder** (the
+   grey-wedge fit). The measured endpoint was tried on the user's real negatives against the stored
+   previews and **lowered** PSNR on average (see the table in Evidence below), so it is not the
+   default; an explicit `negative.darkR/G/B` overrides both. What remains open is the *exact* percentile and any base-relative
+   term: the colour negatives — the only frames with a spread of dark content — are not yet faithfully
+   reconstructed (gap 4), so the statistic was fitted only on the neutral black-and-white subset. On
+   artificial images the difference is visible: on `channel_ramp`, the plugin's scene-derived endpoint
+   hard-clips the red ramp (39.8 % of the red row at 255, mean |error| vs the known positive 42.8),
+   while a min-like endpoint clips far less — the *residual* is now the percentile, not the family.
 2. **The output has a nonlinear colour-mixing component** on top of the per-channel curve. The
    per-channel window cannot reproduce the plugin's colour model, so on the reference `color_grid`
    the two disagree by a warm bias (R−G ≈ +15 code values on the neutral-row patches, which the
@@ -202,6 +235,26 @@ parameter where a formula is unknown rather than inventing one.
    is read, decompiled or shipped.
 
 ## Evidence
+
+### The user's real negatives (30 photos, against the stored Lightroom previews)
+
+Not in the reproducible test suite (the files are the user's). Each photo: LightCraft's full render
+with the photo's own `Temperature`/`Tint`, the user's `Negative Lab - Sony ILCE-7M4 v2.3` profile,
+the frame-measured base, and the tone/density/LUT settings NLP wrote; PSNR over the central 80 % against
+the preview (the post-conversion positive). Mean over 30 photos (10 per colour model):
+
+| dark endpoint | all 30 | noritsu | frontier | blackandwhite |
+|---|--:|--:|--:|--:|
+| placeholder (default) | **9.54 dB** | 8.12 | 11.82 | 8.66 |
+| measured near-min (`dark_auto`) | 8.44 dB | 7.88 | 10.90 | 6.55 |
+
+The measured endpoint is worse on average, so it stays opt-in. The endpoint estimate itself is closer
+to the recorded `whitePointOrigin` on black-and-white frames (mean |error| 6.9 code values against 24.4
+for the placeholder) but not on colour frames (37 and 15 against 43 and 23), and the render error that
+dominates PSNR sits elsewhere: on the black-and-white frames the render's dark end is 100–150 code
+values above the preview's, because the colour render (raw white balance and camera profile at
+2000–2650 K, see `lc-endpoint`) is not the frame NLP analysed. Until that stage is faithful the endpoint
+cannot be judged on PSNR.
 
 Every row comes from **the same command with the same settings**, and the film base is **measured**
 (no `base_*` in the settings) — the strongest claim, and what a user gets. All of it is reproduced by

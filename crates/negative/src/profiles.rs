@@ -83,6 +83,127 @@ pub fn describe(dcp: &Dcp) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Discovery — the user's own Negative Lab Pro profile tree
+// ---------------------------------------------------------------------------
+
+/// A `.dcp` found on disk, classified from its filename (no parsing, so a whole
+/// tree of thousands can be listed cheaply).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileFile {
+    pub path: std::path::PathBuf,
+    /// The file's name (no directory).
+    pub name: String,
+    /// The camera part of the name, before a trailing generation suffix.
+    pub camera: String,
+    pub generation: Option<crate::dcp::Generation>,
+}
+
+impl ProfileFile {
+    /// Classify a file path; `None` when it is not a `.dcp`.
+    pub fn from_path(path: &Path) -> Option<ProfileFile> {
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        if !name.to_ascii_lowercase().ends_with(".dcp") {
+            return None;
+        }
+        let generation = crate::dcp::Generation::from_filename(&name);
+        let stem = name.strip_suffix(".dcp").unwrap_or(&name).trim_end();
+        // `Negative Lab - Sony ILCE-7M4 v2.3` -> camera `Negative Lab - Sony ILCE-7M4`.
+        let camera = stem.strip_suffix(" v2.3").or_else(|| stem.strip_suffix(" v2")).unwrap_or(stem).to_owned();
+        Some(ProfileFile { path: path.to_path_buf(), name, camera, generation })
+    }
+}
+
+/// The per-OS roots the Adobe Camera Raw camera profiles live under, Negative Lab Pro's own tree
+/// being a subdirectory of each. Existing directories only, in a stable order.
+pub fn default_dirs() -> Vec<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        roots.push(std::path::PathBuf::from(appdata).join("Adobe/CameraRaw/CameraProfiles"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(std::path::PathBuf::from(&home).join("Library/Application Support/Adobe/CameraRaw/CameraProfiles"));
+        roots.push(std::path::PathBuf::from(&home).join(".config/Adobe/CameraRaw/CameraProfiles"));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        roots.push(std::path::PathBuf::from(xdg).join("Adobe/CameraRaw/CameraProfiles"));
+    }
+    roots.retain(|r| r.is_dir());
+    roots
+}
+
+/// Every `.dcp` under `dir` (recursively, to a bounded depth), sorted by name. Cheap: filenames
+/// only, nothing parsed. A missing or unreadable directory yields an empty list.
+pub fn discover(dir: &Path) -> Vec<ProfileFile> {
+    let mut out = Vec::new();
+    walk(dir, 0, &mut out);
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.path == b.path);
+    out
+}
+
+fn walk(dir: &Path, depth: usize, out: &mut Vec<ProfileFile>) {
+    if depth > 3 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            walk(&path, depth + 1, out);
+        } else if let Some(p) = ProfileFile::from_path(&path) {
+            out.push(p);
+        }
+    }
+}
+
+/// Every profile the current machine exposes under the standard Camera Raw roots.
+pub fn discover_default() -> Vec<ProfileFile> {
+    let mut out: Vec<ProfileFile> = Vec::new();
+    for root in default_dirs() {
+        out.extend(discover(&root));
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.path == b.path);
+    out
+}
+
+/// `s` reduced to lowercase alphanumerics, for camera-name comparison ("Sony ILCE-7M4" and
+/// "ILCE-7M4" both key on `ilce7m4`).
+fn camera_key(s: &str) -> String {
+    s.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
+}
+
+/// Pick the best profile for a camera among `files`: an exact camera-name match preferred, then a
+/// suffix match on the model; within a match, the newest generation (v2.3, then v2, then base),
+/// then the shortest name. `models` are the camera make/model strings to try, best first. `None`
+/// when nothing matches or `models` names no camera.
+pub fn find_for_models(files: &[ProfileFile], models: &[String]) -> Option<ProfileFile> {
+    let keys: Vec<String> = models.iter().map(|m| camera_key(m)).filter(|m| !m.is_empty()).collect();
+    if keys.is_empty() {
+        return None;
+    }
+    // Lower is better: exact camera match, then best model candidate, then newest generation, then
+    // shortest name.
+    let mut best: Option<((usize, usize, i32, usize), ProfileFile)> = None;
+    for f in files {
+        let key = camera_key(&f.camera);
+        let rank =
+            keys.iter().position(|m| key == *m).map(|i| (0usize, i)).or_else(|| keys.iter().position(|m| key.ends_with(m)).map(|i| (1usize, i)));
+        let Some((class, idx)) = rank else { continue };
+        let generation = match f.generation {
+            Some(crate::dcp::Generation::V23) => 2,
+            Some(crate::dcp::Generation::V2) => 1,
+            _ => 0,
+        };
+        let score = (class, idx, -generation, f.name.len());
+        if best.as_ref().is_none_or(|(s, _)| score < *s) {
+            best = Some((score, f.clone()));
+        }
+    }
+    best.map(|(_, f)| f)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +327,43 @@ mod tests {
         let junk = dir.join("junk.dcp");
         std::fs::write(&junk, b"not a dcp").unwrap();
         assert!(get(junk.to_str().unwrap()).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_files_are_classified_by_name() {
+        let f = ProfileFile::from_path(Path::new("/x/Negative Lab - Sony ILCE-7M4 v2.3.dcp")).unwrap();
+        assert_eq!(f.camera, "Negative Lab - Sony ILCE-7M4");
+        assert_eq!(f.generation, Some(crate::dcp::Generation::V23));
+        let f = ProfileFile::from_path(Path::new("/x/Negative Lab - Canon EOS 100D v2.dcp")).unwrap();
+        assert_eq!(f.camera, "Negative Lab - Canon EOS 100D");
+        assert_eq!(f.generation, Some(crate::dcp::Generation::V2));
+        let f = ProfileFile::from_path(Path::new("/x/Negative Lab - Nikon D850.dcp")).unwrap();
+        assert_eq!(f.camera, "Negative Lab - Nikon D850");
+        assert_eq!(f.generation, Some(crate::dcp::Generation::Base));
+        assert!(ProfileFile::from_path(Path::new("/x/notes.txt")).is_none());
+    }
+
+    #[test]
+    fn discovery_walks_the_tree_and_the_camera_pick_prefers_v2_3() {
+        let dir = std::env::temp_dir().join(format!("lc-negative-disc-{}", std::process::id()));
+        let sub = dir.join("NegativeLab Camera Profiles");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&sub).unwrap();
+        for n in [
+            "Negative Lab - Sony ILCE-7M4.dcp",
+            "Negative Lab - Sony ILCE-7M4 v2.dcp",
+            "Negative Lab - Sony ILCE-7M4 v2.3.dcp",
+            "Negative Lab - Canon EOS 100D v2.3.dcp",
+        ] {
+            std::fs::write(sub.join(n), b"x").unwrap();
+        }
+        let files = discover(&dir);
+        assert_eq!(files.len(), 4, "{files:?}");
+        let pick = find_for_models(&files, &["SONY".into(), "ILCE-7M4".into()]).unwrap();
+        assert_eq!(pick.name, "Negative Lab - Sony ILCE-7M4 v2.3.dcp");
+        assert!(find_for_models(&files, &["Nikon Z8".into()]).is_none());
+        assert!(find_for_models(&files, &[]).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
